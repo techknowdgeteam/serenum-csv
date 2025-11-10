@@ -1,0 +1,21 @@
+{
+    "next_jpgcard": [
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_42.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_43.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_44.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_45.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_46.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_47.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_48.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_49.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_50.jpg",
+        "https://jpgsvault.rf.gd//jpgs/Brilliance/card_51.jpg"
+    ],
+    "timestamp": "2025-11-10T07:23:14.501930+01:00",
+    "total_checked": 51,
+    "total_valid_new": 10,
+    "total_invalid": 9,
+    "skipped_already_uploaded": 32,
+    "author": "Brilliance",
+    "note": "Only brand-new URLs (not in uploadedjpgs.json)"
+}

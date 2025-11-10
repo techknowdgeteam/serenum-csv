@@ -1,0 +1,14 @@
+{
+    "last_schedule": {
+        "id": "03_1800",
+        "date": "03/11/2025",
+        "time_12hour": "06:06 pm",
+        "time_24hour": "18:06"
+    },
+    "next_schedule": {
+        "id": "03_2000",
+        "date": "03/11/2025",
+        "time_12hour": "08:20 pm",
+        "time_24hour": "20:20"
+    }
+}

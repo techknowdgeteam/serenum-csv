@@ -1,0 +1,30 @@
+[
+    {
+        "last_schedule": {
+            "id": "02_2200",
+            "date": "02/11/2025",
+            "time_12hour": "10:00 PM",
+            "time_24hour": "22:00"
+        },
+        "next_schedule": {
+            "id": "12_0200",
+            "date": "12/11/2025",
+            "time_12hour": "02:00 AM",
+            "time_24hour": "02:00"
+        }
+    },
+    {
+        "last_schedule": {
+            "id": "02_2200",
+            "date": "02/11/2025",
+            "time_12hour": "10:00 PM",
+            "time_24hour": "22:00"
+        },
+        "next_schedule": {
+            "id": "03_0400",
+            "date": "03/11/2025",
+            "time_12hour": "04:00 AM",
+            "time_24hour": "04:00"
+        }
+    }
+]
