@@ -1,5 +1,5 @@
 <?php
-  // jpgsvault.php - Dynamic Folder & Image Gallery with DB + Fullscreen + Copy Link + BULK UPLOAD + EDIT/DELETE + UPLOADED FOLDERS + MOVE TO UPLOADED + **SEARCH BY URL**
+  // jpgsvault.php - Dynamic Folder & Image Gallery with DB + Fullscreen + Copy Link + BULK UPLOAD + EDIT/DELETE + UPLOADED FOLDERS + MOVE TO UPLOADED + **SEARCH BY URL** + **MOVE ALL JPGS** + **MOVE BACK FROM UPLOADED**
   // ---------------------------------------------------------------
   // DATABASE
   $host = 'sql211.infinityfree.com';
@@ -44,6 +44,7 @@
   function getOriginalFolder($uploadedFolder) {
       return substr($uploadedFolder, 0, -9); // remove '_uploaded'
   }
+
   // ---------------------------------------------------------------
   // INITIAL ROW
   $pdo->prepare("INSERT IGNORE INTO jpgsvault_table (id) VALUES (1)")->execute();
@@ -123,7 +124,12 @@
       }
       // Delete main folder
       $images = getImagesInFolder($pdo, $folder);
-      foreach ($images as $path) if (file_exists($path)) @unlink($path);
+      foreach ($images as $path) {
+          $real = realpath($path);
+          if ($real && is_file($real)) {
+              @unlink($real);
+          }
+      }
       $dir = "jpgs/$folder/";
       if (is_dir($dir)) { array_map('unlink', glob("$dir*.*") ?: []); @rmdir($dir); }
       $pdo->exec("ALTER TABLE jpgsvault_table DROP COLUMN `$folder`");
@@ -132,7 +138,12 @@
       $uploaded = getPairedUploadedFolder($folder);
       if (columnExists($pdo, $uploaded)) {
           $imagesUp = getImagesInFolder($pdo, $uploaded);
-          foreach ($imagesUp as $path) if (file_exists($path)) @unlink($path);
+          foreach ($imagesUp as $path) {
+              $real = realpath($path);
+              if ($real && is_file($real)) {
+                  @unlink($real);
+              }
+          }
           $dirUp = "jpgs/$uploaded/";
           if (is_dir($dirUp)) { array_map('unlink', glob("$dirUp*.*") ?: []); @rmdir($dirUp); }
           $pdo->exec("ALTER TABLE jpgsvault_table DROP COLUMN `$uploaded`");
@@ -143,7 +154,7 @@
   }
 
   // ---------------------------------------------------------------
-  // BULK UPLOAD
+  // BULK UPLOAD (FIXED: Unique filenames + safe upload)
   if (isset($_POST['action']) && $_POST['action'] === 'upload_images') {
       $folder = $_POST['folder'];
       if (!columnExists($pdo, $folder)) {
@@ -165,9 +176,13 @@
               continue;
           }
           $tmp = $_FILES['images']['tmp_name'][$i];
-          $idx = count(getImagesInFolder($pdo, $folder)) + count($uploaded);
-          $filename = "card_$idx.$ext";
-          $path = $uploadDir . $filename;
+
+          // UNIQUE FILENAME (NO REUSE)
+          do {
+              $filename = uniqid('img_') . '.' . $ext;
+              $path = $uploadDir . $filename;
+          } while (file_exists($path));
+
           if (move_uploaded_file($tmp, $path)) {
               $uploaded[] = $path;
           } else {
@@ -190,7 +205,7 @@
   }
 
   // ---------------------------------------------------------------
-  // MOVE IMAGES TO UPLOADED FOLDER (now accepts full URLs)
+  // MOVE IMAGES TO UPLOADED FOLDER (by URL list)
   if (isset($_POST['action']) && $_POST['action'] === 'move_to_uploaded') {
       $folder = $_POST['folder'];
       $urlList = $_POST['urls'] ?? '';
@@ -240,7 +255,125 @@
   }
 
   // ---------------------------------------------------------------
-  // DELETE IMAGES
+  // MOVE ALL JPGs TO UPLOADED
+  if (isset($_POST['action']) && $_POST['action'] === 'move_all_jpgs') {
+      $folder = $_POST['folder'];
+      if (!columnExists($pdo, $folder) || isUploadedFolder($folder)) {
+          echo json_encode(['success' => false, 'message' => 'Invalid folder']);
+          exit;
+      }
+
+      $uploadedFolder = getPairedUploadedFolder($folder);
+      if (!columnExists($pdo, $uploadedFolder)) {
+          echo json_encode(['success' => false, 'message' => 'Uploaded folder missing']);
+          exit;
+      }
+
+      $images = getImagesInFolder($pdo, $folder);
+      $jpgImages = array_filter($images, fn($path) => preg_match('/\.(jpe?g)$/i', $path));
+
+      if (empty($jpgImages)) {
+          echo json_encode(['success' => true, 'moved' => 0, 'message' => 'No JPGs found']);
+          exit;
+      }
+
+      $uploadedImages = getImagesInFolder($pdo, $uploadedFolder);
+      $newUploaded = array_merge($uploadedImages, $jpgImages);
+      saveImagesToFolder($pdo, $uploadedFolder, $newUploaded);
+
+      $remaining = array_values(array_diff($images, $jpgImages));
+      saveImagesToFolder($pdo, $folder, $remaining);
+
+      echo json_encode(['success' => true, 'moved' => count($jpgImages)]);
+      exit;
+  }
+
+  // ---------------------------------------------------------------
+  // MOVE BACK FROM UPLOADED TO MAIN
+  if (isset($_POST['action']) && $_POST['action'] === 'move_back_to_main') {
+      $uploadedFolder = $_POST['folder'];
+      $urlList = $_POST['urls'] ?? '';
+      $urls = array_filter(array_map('trim', explode(',', $urlList)));
+
+      if (!isUploadedFolder($uploadedFolder) || empty($urls)) {
+          echo json_encode(['success' => false, 'message' => 'Invalid request']);
+          exit;
+      }
+
+      $mainFolder = getOriginalFolder($uploadedFolder);
+      if (!columnExists($pdo, $mainFolder)) {
+          echo json_encode(['success' => false, 'message' => 'Main folder missing']);
+          exit;
+      }
+
+      $uploadedImages = getImagesInFolder($pdo, $uploadedFolder);
+      $mainImages = getImagesInFolder($pdo, $mainFolder);
+
+      $base = (isset($_SERVER['HTTPS']) ? 'https' : 'http') . "://$_SERVER[HTTP_HOST]" . dirname($_SERVER['REQUEST_URI']);
+      $toMove = [];
+      foreach ($urls as $url) {
+          $url = trim($url);
+          if (strpos($url, $base) === 0) {
+              $path = urldecode(substr($url, strlen($base) + 1));
+          } else {
+              $path = urldecode($url);
+          }
+          if (in_array($path, $uploadedImages)) {
+              $toMove[] = $path;
+          }
+      }
+
+      if (empty($toMove)) {
+          echo json_encode(['success' => false, 'message' => 'No matching images found']);
+          exit;
+      }
+
+      $newMain = array_merge($mainImages, $toMove);
+      saveImagesToFolder($pdo, $mainFolder, $newMain);
+
+      $remaining = array_values(array_diff($uploadedImages, $toMove));
+      saveImagesToFolder($pdo, $uploadedFolder, $remaining);
+
+      echo json_encode(['success' => true, 'moved' => count($toMove)]);
+      exit;
+  }
+
+  // ---------------------------------------------------------------
+  // MOVE ALL JPGs BACK TO MAIN
+  if (isset($_POST['action']) && $_POST['action'] === 'move_all_jpgs_back') {
+      $uploadedFolder = $_POST['folder'];
+      if (!isUploadedFolder($uploadedFolder)) {
+          echo json_encode(['success' => false, 'message' => 'Invalid folder']);
+          exit;
+      }
+
+      $mainFolder = getOriginalFolder($uploadedFolder);
+      if (!columnExists($pdo, $mainFolder)) {
+          echo json_encode(['success' => false, 'message' => 'Main folder missing']);
+          exit;
+      }
+
+      $images = getImagesInFolder($pdo, $uploadedFolder);
+      $jpgImages = array_filter($images, fn($path) => preg_match('/\.(jpe?g)$/i', $path));
+
+      if (empty($jpgImages)) {
+          echo json_encode(['success' => true, 'moved' => 0, 'message' => 'No JPGs found']);
+          exit;
+      }
+
+      $mainImages = getImagesInFolder($pdo, $mainFolder);
+      $newMain = array_merge($mainImages, $jpgImages);
+      saveImagesToFolder($pdo, $mainFolder, $newMain);
+
+      $remaining = array_values(array_diff($images, $jpgImages));
+      saveImagesToFolder($pdo, $uploadedFolder, $remaining);
+
+      echo json_encode(['success' => true, 'moved' => count($jpgImages)]);
+      exit;
+  }
+
+  // ---------------------------------------------------------------
+  // DELETE IMAGES (FIXED: realpath + unlink)
   if (isset($_POST['action']) && $_POST['action'] === 'delete_images') {
       $folder = $_POST['folder'] ?? '';
       $paths = json_decode($_POST['paths'] ?? '[]', true);
@@ -251,20 +384,44 @@
       $current = getImagesInFolder($pdo, $folder);
       $remaining = array_values(array_diff($current, $paths));
       saveImagesToFolder($pdo, $folder, $remaining);
+
       foreach ($paths as $p) {
-          if (file_exists($p)) @unlink($p);
+          $real = realpath($p);
+          if ($real && is_file($real)) {
+              @unlink($real);
+          }
       }
       echo json_encode(['success'=>true]);
       exit;
   }
 
   // ---------------------------------------------------------------
-  // GET IMAGES
+  // GET IMAGES (FIXED: Cache-busting + Orphan cleanup)
   if (isset($_GET['action']) && $_GET['action'] === 'get_images') {
       $folder = $_GET['folder'];
-      $images = columnExists($pdo, $folder) ? getImagesInFolder($pdo, $folder) : [];
+      if (!columnExists($pdo, $folder)) {
+          echo json_encode([]);
+          exit;
+      }
+
+      $images = getImagesInFolder($pdo, $folder);
+      $valid = array_filter($images, function($p) {
+          $real = realpath($p);
+          return $real && is_file($real);
+      });
+
+      if (count($valid) < count($images)) {
+          saveImagesToFolder($pdo, $folder, array_values($valid));
+      }
+
       $baseUrl = (isset($_SERVER['HTTPS']) ? 'https' : 'http') . "://$_SERVER[HTTP_HOST]" . dirname($_SERVER['REQUEST_URI']);
-      $withUrl = array_map(fn($p)=>['path'=>$p,'url'=>$baseUrl.'/'.$p], $images);
+      $withUrl = array_map(function($p) use ($baseUrl) {
+          $url = $baseUrl . '/' . $p;
+          $real = realpath($p);
+          $timestamp = ($real && is_file($real)) ? filemtime($real) : time();
+          return ['path' => $p, 'url' => $url . '?v=' . $timestamp];
+      }, array_values($valid));
+
       echo json_encode($withUrl);
       exit;
   }
@@ -326,6 +483,7 @@
     --primary: #6366f1;
     --primary-dark: #4f46e5;
     --success: #10b981;
+    --warning: #f59e0b;
     --danger: #ef4444;
     --bg: #f8fafc;
     --card: #ffffff;
@@ -586,17 +744,30 @@
     cursor:pointer;
   }
   .add-btn-container button:hover{background:#0056b3}
-  .move-to-uploaded-btn{
-    margin-top:1.5rem;
+
+  /* Move Buttons */
+  .move-to-uploaded-btn,
+  .move-all-jpgs-btn,
+  .move-back-to-main-btn,
+  .move-all-jpgs-back-btn {
+    margin-top:1rem;
     padding:.8rem 1.8rem;
-    background:#10b981;
     color:white;
     border:none;
     border-radius:50px;
     font-weight:600;
     cursor:pointer;
+    width: 240px;
+    font-size: .95rem;
   }
+  .move-to-uploaded-btn{background:#10b981}
   .move-to-uploaded-btn:hover{background:#0d8b5f}
+  .move-all-jpgs-btn{background:#f59e0b}
+  .move-all-jpgs-btn:hover{background:#e68a00}
+  .move-back-to-main-btn{background:#3b82f6}
+  .move-back-to-main-btn:hover{background:#2563eb}
+  .move-all-jpgs-back-btn{background:#8b5cf6}
+  .move-all-jpgs-back-btn:hover{background:#7c3aed}
 
   /* ----------------- SELECTION CHECKBOX ----------------- */
   .image-item .checkbox{
@@ -651,7 +822,7 @@
   .fab:hover{transform:scale(1.1)}
 
   /* ----------------- MODALS ----------------- */
-  .modal,.fullscreen-modal,.bulk-upload-overlay,.confirm-modal,.rename-modal,.delete-folder-modal,.move-modal{
+  .modal,.fullscreen-modal,.bulk-upload-overlay,.confirm-modal,.rename-modal,.delete-folder-modal,.move-modal,.move-all-modal,.move-back-modal,.move-all-back-modal{
     display:none;
     position:fixed;
     top:0;
@@ -664,7 +835,7 @@
     z-index:100;
     padding:1rem;
   }
-  .modal-content,.confirm-box,.bulk-upload-modal,.rename-box,.delete-folder-box,.move-box{
+  .modal-content,.confirm-box,.bulk-upload-modal,.rename-box,.delete-folder-box,.move-box,.move-all-box,.move-back-box,.move-all-back-box{
     background:#fff;
     padding:2rem;
     border-radius:12px;
@@ -675,7 +846,7 @@
     animation:modalPop .3s ease;
   }
   @keyframes modalPop{from{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}
-  .modal input[type=text], .rename-box input[type=text], .move-box textarea{
+  .modal input[type=text], .rename-box input[type=text], .move-box textarea, .move-back-box textarea{
     width:100%;
     padding:.8rem;
     margin:1rem 0;
@@ -683,7 +854,7 @@
     border-radius:8px;
     font-size:1rem;
   }
-  .modal button,.confirm-box button,.bulk-modal-actions button,.rename-box button,.delete-folder-box button,.move-box button{
+  .modal button,.confirm-box button,.bulk-modal-actions button,.rename-box button,.delete-folder-box button,.move-box button,.move-all-box button,.move-back-box button,.move-all-back-box button{
     padding:.6rem 1.2rem;
     margin:.3rem;
     border:none;
@@ -691,11 +862,11 @@
     cursor:pointer;
     font-weight:600;
   }
-  .modal button:first-of-type,.confirm-yes,.rename-yes,.delete-folder-yes,.move-yes{
+  .modal button:first-of-type,.confirm-yes,.rename-yes,.delete-folder-yes,.move-yes,.move-all-yes,.move-back-yes,.move-all-back-yes{
     background:#dc3545;
     color:#fff
   }
-  .modal button:last-of-type,.confirm-no,.close-bulk,.rename-no,.delete-folder-no,.move-no{
+  .modal button:last-of-type,.confirm-no,.close-bulk,.rename-no,.delete-folder-no,.move-no,.move-all-no,.move-back-no,.move-all-back-no{
     background:#ccc;
     color:#333
   }
@@ -877,6 +1048,13 @@
     }
     .top-controls{flex-direction:column}
     .search-wrapper{max-width:none}
+    .move-to-uploaded-btn,
+    .move-all-jpgs-btn,
+    .move-back-to-main-btn,
+    .move-all-jpgs-back-btn {
+      width: 100%;
+      max-width: 240px;
+    }
   }
 </style>
 </head>
@@ -965,6 +1143,41 @@
       </div>
     </div>
 
+    <!-- Move All JPGs to Uploaded -->
+    <div class="move-all-modal" id="move-all-modal">
+      <div class="move-all-box">
+        <p>Move <strong>all JPG/JPEG images</strong> to "<span id="move-all-target"></span>"?</p>
+        <div>
+          <button id="move-all-yes">Move All</button>
+          <button id="move-all-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Move Back to Main Modal -->
+    <div class="move-back-modal" id="move-back-modal">
+      <div class="move-back-box">
+        <h3>Move Back to Main</h3>
+        <p>Enter image URLs (comma-separated):</p>
+        <textarea id="move-back-indices" placeholder="https://..." rows="3"></textarea>
+        <div>
+          <button id="move-back-yes">Move Back</button>
+          <button id="move-back-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Move All JPGs Back to Main -->
+    <div class="move-all-back-modal" id="move-all-back-modal">
+      <div class="move-all-back-box">
+        <p>Move <strong>all JPG/JPEG images</strong> back to "<span id="move-all-back-target"></span>"?</p>
+        <div>
+          <button id="move-all-back-yes">Move All Back</button>
+          <button id="move-all-back-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Fullscreen Modal -->
     <div class="fullscreen-modal" id="fullscreen-modal">
       <img src="" alt="Full" class="fullscreen-img" id="fullscreen-img">
@@ -1038,6 +1251,18 @@
   const moveUrls = document.getElementById('move-indices');
   const moveYes = document.getElementById('move-yes');
   const moveNo = document.getElementById('move-no');
+  const moveAllModal = document.getElementById('move-all-modal');
+  const moveAllTarget = document.getElementById('move-all-target');
+  const moveAllYes = document.getElementById('move-all-yes');
+  const moveAllNo = document.getElementById('move-all-no');
+  const moveBackModal = document.getElementById('move-back-modal');
+  const moveBackUrls = document.getElementById('move-back-indices');
+  const moveBackYes = document.getElementById('move-back-yes');
+  const moveBackNo = document.getElementById('move-back-no');
+  const moveAllBackModal = document.getElementById('move-all-back-modal');
+  const moveAllBackTarget = document.getElementById('move-all-back-target');
+  const moveAllBackYes = document.getElementById('move-all-back-yes');
+  const moveAllBackNo = document.getElementById('move-all-back-no');
 
   // SEARCH
   const searchInput = document.getElementById('search-input');
@@ -1254,7 +1479,7 @@
     renderImages(filteredImages);
   }
 
-  // ---------- RENDER IMAGES ----------
+  // ---------- RENDER IMAGES (with cache-busted URLs) ----------
   function renderImages(images) {
     container.innerHTML = '';
     if (images.length===0) {
@@ -1278,7 +1503,7 @@
       const ext = img.path.split('.').pop().toUpperCase();
       item.innerHTML = `
         <div class="checkbox"></div>
-        <img src="${img.path}" alt="Image ${i+1}" loading="lazy">
+        <img src="${img.url}" alt="Image ${i+1}" loading="lazy">
         <p>#${i+1} • ${ext}</p>
       `;
       const cb = item.querySelector('.checkbox');
@@ -1288,18 +1513,49 @@
     });
     container.appendChild(scroll);
 
-    // Add Move to Uploaded Button (only for main folder)
-    if (!currentFolder.endsWith('_uploaded')) {
-      const moveBtn = document.createElement('div');
-      moveBtn.style.textAlign = 'center';
-      moveBtn.innerHTML = `<button class="move-to-uploaded-btn" id="move-to-uploaded-btn">Move to Uploaded</button>`;
-      container.appendChild(moveBtn);
-      moveBtn.querySelector('button').onclick = () => {
+    // Add Move Buttons
+    const moveWrapper = document.createElement('div');
+    moveWrapper.style.textAlign = 'center';
+    moveWrapper.innerHTML = '';
+
+    const isUploaded = currentFolder.endsWith('_uploaded');
+    if (!isUploaded) {
+      moveWrapper.innerHTML += `
+        <button class="move-to-uploaded-btn" id="move-to-uploaded-btn">Move to Uploaded</button>
+        <button class="move-all-jpgs-btn" id="move-all-jpgs-btn">Move All JPGs to Uploaded</button>
+      `;
+    } else {
+      const mainName = activeBtn.textContent.replace(' (Uploaded)', '');
+      moveWrapper.innerHTML += `
+        <button class="move-back-to-main-btn" id="move-back-to-main-btn">Move Back to Main</button>
+        <button class="move-all-jpgs-back-btn" id="move-all-jpgs-back-btn">Move All JPGs Back</button>
+      `;
+    }
+    container.appendChild(moveWrapper);
+
+    // Attach event listeners
+    if (!isUploaded) {
+      document.getElementById('move-to-uploaded-btn').onclick = () => {
         moveUrls.placeholder = 'Paste image URLs, separated by commas';
         moveUrls.value = '';
         moveModal.style.display = 'flex';
       };
+      document.getElementById('move-all-jpgs-btn').onclick = () => {
+        moveAllTarget.textContent = activeBtn.textContent + ' (Uploaded)';
+        moveAllModal.style.display = 'flex';
+      };
+    } else {
+      document.getElementById('move-back-to-main-btn').onclick = () => {
+        moveBackUrls.placeholder = 'Paste image URLs, separated by commas';
+        moveBackUrls.value = '';
+        moveBackModal.style.display = 'flex';
+      };
+      document.getElementById('move-all-jpgs-back-btn').onclick = () => {
+        moveAllBackTarget.textContent = activeBtn.textContent.replace(' (Uploaded)', '');
+        moveAllBackModal.style.display = 'flex';
+      };
     }
+
     fab.style.display = 'flex';
     setupSelection();
   }
@@ -1318,7 +1574,6 @@
         );
       }
       renderImages(filteredImages);
-      // keep selection state consistent
       document.querySelectorAll('.image-item').forEach(item => {
         const path = item.dataset.path;
         if (selectedImages.has(path)) {
@@ -1396,7 +1651,7 @@
     });
   };
 
-  // ---------- MOVE TO UPLOADED (by URL) ----------
+  // ---------- MOVE TO UPLOADED ----------
   moveNo.onclick = () => { moveModal.style.display = 'none'; moveUrls.value = ''; };
   moveYes.onclick = () => {
     const raw = moveUrls.value.trim();
@@ -1411,9 +1666,73 @@
       if (res.success) {
         moveModal.style.display = 'none';
         moveUrls.value = '';
+        showAlert(`Moved ${res.moved} image(s) to uploaded.`);
         loadFolder(currentFolder, activeBtn.textContent);
       } else {
         showAlert(res.message || 'Move failed');
+      }
+    });
+  };
+
+  // ---------- MOVE ALL JPGS ----------
+  moveAllNo.onclick = () => moveAllModal.style.display = 'none';
+  moveAllYes.onclick = () => {
+    moveAllModal.style.display = 'none';
+    fetch('', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `action=move_all_jpgs&folder=${currentFolder}`
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res.success) {
+        showAlert(`Moved ${res.moved} JPG(s) to uploaded.`);
+        loadFolder(currentFolder, activeBtn.textContent);
+      } else {
+        showAlert(res.message || 'Failed to move JPGs.');
+      }
+    });
+  };
+
+  // ---------- MOVE BACK TO MAIN ----------
+  moveBackNo.onclick = () => { moveBackModal.style.display = 'none'; moveBackUrls.value = ''; };
+  moveBackYes.onclick = () => {
+    const raw = moveBackUrls.value.trim();
+    if (!raw) return showAlert('Paste at least one image URL.');
+    fetch('', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `action=move_back_to_main&folder=${currentFolder}&urls=${encodeURIComponent(raw)}`
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res.success) {
+        moveBackModal.style.display = 'none';
+        moveBackUrls.value = '';
+        showAlert(`Moved ${res.moved} image(s) back to main.`);
+        loadFolder(currentFolder, activeBtn.textContent);
+      } else {
+        showAlert(res.message || 'Move back failed');
+      }
+    });
+  };
+
+  // ---------- MOVE ALL JPGS BACK ----------
+  moveAllBackNo.onclick = () => moveAllBackModal.style.display = 'none';
+  moveAllBackYes.onclick = () => {
+    moveAllBackModal.style.display = 'none';
+    fetch('', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `action=move_all_jpgs_back&folder=${currentFolder}`
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res.success) {
+        showAlert(`Moved ${res.moved} JPG(s) back to main.`);
+        loadFolder(currentFolder, activeBtn.textContent);
+      } else {
+        showAlert(res.message || 'Failed to move back JPGs.');
       }
     });
   };
@@ -1496,12 +1815,12 @@
   const notif = document.getElementById('copied-notif');
   let currentImageUrl = '';
   function openFullscreen(path,url){
-    fullscreenImg.src = path;
+    fullscreenImg.src = url;  // Use cache-busted URL
     currentImageUrl = url;
     fullscreenModal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
   }
-  closeBtn  .onclick = ()=>{ fullscreenModal.style.display='none'; document.body.style.overflow='auto'; };
+  closeBtn.onclick = ()=>{ fullscreenModal.style.display='none'; document.body.style.overflow='auto'; };
   copyBtn.onclick = ()=>{
     navigator.clipboard.writeText(currentImageUrl).then(()=>{
       notif.classList.add('show');
@@ -1518,6 +1837,9 @@
       if(renameModal.style.display==='flex') renameNo.click();
       if(deleteFolderModal.style.display==='flex') deleteFolderNo.click();
       if(moveModal.style.display==='flex') moveNo.click();
+      if(moveAllModal.style.display==='flex') moveAllNo.click();
+      if(moveBackModal.style.display==='flex') moveBackNo.click();
+      if(moveAllBackModal.style.display==='flex') moveAllBackNo.click();
       if(alertModal.style.display==='flex') alertOk.click();
       if(folderMenu.classList.contains('show')) folderMenu.classList.remove('show');
     }
