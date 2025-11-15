@@ -3,7 +3,7 @@
     "page": "none",
     "group": "include",
     "processjpgfrom": "freshjpgs",
-    "cardamount": "10",
+    "cardamount": "1",
     "schedule_date": "18/11/2025 12:00",
     "type": "fullorders",
     "group_types": "others",

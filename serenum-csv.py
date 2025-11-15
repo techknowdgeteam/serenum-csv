@@ -478,12 +478,7 @@ def check_single_url(
     final_dir: str | None = None,
 ) -> Tuple[bool, str]:
     """
-    1. GET the URL (streamed)
-    2. Save to *temp_dir* (unique name)
-    3. Open + verify + fully load with Pillow
-    4. If OK → move to *final_dir* (unique name) and return True
-    5. If corrupted → delete temp file and return False
-
+    Downloads and verifies image integrity using Pillow.
     Returns (is_valid: bool, debug_info: str)
     """
     headers = {
@@ -494,24 +489,17 @@ def check_single_url(
         )
     }
 
-    # -------------------------------------------------- 1. GET
     try:
-        resp = requests.get(
-            url, headers=headers, timeout=timeout,
-            allow_redirects=True, stream=True
-        )
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True, stream=True)
         if resp.status_code != 200:
             return False, f"HTTP {resp.status_code}"
     except Exception as e:
         return False, f"Request error: {e}"
 
-    # -------------------------------------------------- 2. Save to temp
     if not temp_dir:
-        return False, "temp_dir required for integrity check"
+        return False, "temp_dir required"
 
     os.makedirs(temp_dir, exist_ok=True)
-
-    # Build a safe filename
     base_name = os.path.basename(url.split("?")[0])
     if not base_name.lower().endswith((".jpg", ".jpeg")):
         base_name += ".jpg"
@@ -528,28 +516,22 @@ def check_single_url(
             resp.raw.decode_content = True
             shutil.copyfileobj(resp.raw, f)
     except Exception as e:
-        return False, f"Temp-save failed: {e}"
+        return False, f"Save failed: {e}"
 
-    # -------------------------------------------------- 3. Pillow verify + full load
     try:
-        # 1. Structural verification
         with Image.open(temp_path) as img:
-            img.verify()                     # raises if header / structure broken
-
-        # 2. Force complete decode (catches truncated / partially corrupted files)
+            img.verify()
         with Image.open(temp_path) as img:
-            img.load()                       # raises if pixel data is bad
+            img.load()
     except Exception as e:
-        # Corrupted → delete immediately
         try:
             os.remove(temp_path)
-        except Exception:
+        except:
             pass
-        return False, f"Corrupted image: {e}"
+        return False, f"Corrupted: {e}"
 
-    # -------------------------------------------------- 4. Move to final folder (if requested)
-    final_path = temp_path  # default = keep in temp
-    if final_dir:
+    final_path = temp_path
+    if final_dir and final_dir != temp_dir:
         os.makedirs(final_dir, exist_ok=True)
         dest_name = os.path.basename(temp_path)
         final_path = os.path.join(final_dir, dest_name)
@@ -558,28 +540,27 @@ def check_single_url(
         while os.path.exists(final_path):
             final_path = os.path.join(final_dir, f"{root}_{counter}{ext}")
             counter += 1
-
         try:
             shutil.move(temp_path, final_path)
         except Exception as e:
-            # If move fails, clean the temp file
             try:
                 os.remove(temp_path)
-            except Exception:
+            except:
                 pass
             return False, f"Move failed: {e}"
 
-    # -------------------------------------------------- 5. Return
-    debug = (
-        f"Status: {resp.status_code}, "
-        f"Size: {os.path.getsize(final_path)} bytes → "
-        f"saved to {final_path} (Pillow OK)"
-    )
-    return True, debug
+    return True, f"OK → {os.path.getsize(final_path)} bytes"
 
 def markjpgs():
+    """
+    Ensures:
+      1. jpgfolders has EXACTLY cardamount JPG/PNG files
+      2. next_jpgcard.json has EXACTLY cardamount valid URLs
+      3. 1:1 perfect match between files and URLs
+    If ANY mismatch → DELETE ALL + REDOWNLOAD ALL
+    """
     # ------------------------------------------------------------------ #
-    # 1. Load configuration
+    # 1. Load config
     # ------------------------------------------------------------------ #
     JSON_CONFIG_PATH = r'C:\xampp\htdocs\serenum-csv\pageandgroupauthors.json'
     FETCHED_JSON_PATH = r'C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json'
@@ -591,47 +572,24 @@ def markjpgs():
         author = config.get('author', '').strip()
         processjpgfrom = config.get('processjpgfrom', 'freshjpgs').strip().lower()
         if not author:
-            print("Error: 'author' is missing or empty in config.")
+            print("Error: 'author' missing in config.")
             return
 
         try:
-            cardamount = int(config.get('cardamount', 1))
-            cardamount = max(1, cardamount)
-        except (ValueError, TypeError):
-            print("Warning: 'cardamount' invalid. Using 1.")
+            cardamount = max(1, int(config.get('cardamount', 1)))
+        except:
+            print("Warning: Invalid cardamount. Using 1.")
             cardamount = 1
 
         if processjpgfrom not in ['freshjpgs', 'uploadedjpgs']:
-            print(f"Warning: Invalid 'processjpgfrom': '{processjpgfrom}'. Using 'freshjpgs'.")
             processjpgfrom = 'freshjpgs'
 
     except Exception as e:
-        print(f"Failed to load config: {e}")
+        print(f"Config load failed: {e}")
         return
 
     # ------------------------------------------------------------------ #
-    # 2. Load fetched URLs from fetchedjpgsurl.json
-    # ------------------------------------------------------------------ #
-    if not os.path.exists(FETCHED_JSON_PATH):
-        print(f"Error: Fetched URLs file not found: {FETCHED_JSON_PATH}")
-        print("   Run fetch_urls() first to populate it.")
-        return
-
-    try:
-        with open(FETCHED_JSON_PATH, 'r', encoding='utf-8') as f:
-            fetched_data = json.load(f)
-            all_fetched_urls = fetched_data.get("jpg_urls", [])
-        print(f"Loaded {len(all_fetched_urls)} URLs from fetchedjpgsurl.json")
-    except Exception as e:
-        print(f"Failed to read fetchedjpgsurl.json: {e}")
-        return
-
-    if not all_fetched_urls:
-        print("No URLs found in fetchedjpgsurl.json. Nothing to process.")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 3. Determine base path
+    # 2. Paths
     # ------------------------------------------------------------------ #
     base_path = (
         f"https://jpgsvault.rf.gd/jpgs/{author}_uploaded/"
@@ -639,101 +597,143 @@ def markjpgs():
         else f"https://jpgsvault.rf.gd/jpgs/{author}/"
     )
 
+    jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
+    next_json_dir = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
+    next_json_path = os.path.join(next_json_dir, 'next_jpgcard.json')
+    download_dir = fr'C:\xampp\htdocs\serenum-csv\files\downloaded\{author}'
+
+    os.makedirs(jpgfolders_dir, exist_ok=True)
+    os.makedirs(next_json_dir, exist_ok=True)
+    os.makedirs(download_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------ #
+    # 3. Load fetched URLs
+    # ------------------------------------------------------------------ #
+    if not os.path.exists(FETCHED_JSON_PATH):
+        print(f"fetchedjpgsurl.json not found: {FETCHED_JSON_PATH}")
+        return
+
+    try:
+        with open(FETCHED_JSON_PATH, 'r', encoding='utf-8') as f:
+            all_fetched_urls = set(json.load(f).get("jpg_urls", []))
+        print(f"Loaded {len(all_fetched_urls)} URLs from fetched list")
+    except Exception as e:
+        print(f"Failed to read fetched list: {e}")
+        return
+
     candidate_urls = [
         u for u in all_fetched_urls
         if u.startswith(base_path) and u.lower().endswith(('.jpg', '.jpeg'))
     ]
-    print(f"Found {len(candidate_urls)} candidate URL(s) matching base path: {base_path}")
+    print(f"Found {len(candidate_urls)} candidate JPG URLs")
 
-    if not candidate_urls:
-        print("No matching URLs found for the selected base path.")
+    if len(candidate_urls) < cardamount:
+        print(f"Only {len(candidate_urls)} URLs available, but need {cardamount}. Cannot proceed.")
         return
 
     # ------------------------------------------------------------------ #
-    # 4. Load already-uploaded URLs (create empty if missing/broken)
+    # 4. Load next_jpgcard.json
     # ------------------------------------------------------------------ #
-    uploaded_dir = fr'C:\xampp\htdocs\serenum-csv\files\uploaded jpgs\{author}'
-    uploaded_json_path = os.path.join(uploaded_dir, 'uploadedjpgs.json')
-
-    already_uploaded = set()
-    if os.path.exists(uploaded_json_path):
+    next_urls = []
+    if os.path.exists(next_json_path):
         try:
-            with open(uploaded_json_path, 'r', encoding='utf-8') as f:
-                uploaded_data = json.load(f)
-                already_uploaded = set(uploaded_data.get("uploaded_jpgs", []))
-            print(f"Loaded {len(already_uploaded)} previously uploaded JPGs (will skip duplicates)")
-        except Exception as e:
-            print(f"Warning: Could not read uploadedjpgs.json → {e}")
-            print("   → Creating empty uploadedjpgs.json and continuing...")
-            os.makedirs(uploaded_dir, exist_ok=True)
-            with open(uploaded_json_path, 'w', encoding='utf-8') as f:
-                json.dump({"uploaded_jpgs": []}, f, indent=4, ensure_ascii=False)
-    else:
-        print("No uploadedjpgs.json found → creating empty one")
-        os.makedirs(uploaded_dir, exist_ok=True)
-        with open(uploaded_json_path, 'w', encoding='utf-8') as f:
-            json.dump({"uploaded_jpgs": []}, f, indent=4, ensure_ascii=False)
-
-    # ------------------------------------------------------------------ #
-    # 5. Load *next_jpgcard.json* (create empty if missing/broken)
-    # ------------------------------------------------------------------ #
-    output_dir = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
-    os.makedirs(output_dir, exist_ok=True)
-    json_path = os.path.join(output_dir, 'next_jpgcard.json')
-
-    already_in_next = set()
-    if os.path.exists(json_path):
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(next_json_path, 'r', encoding='utf-8') as f:
                 next_data = json.load(f)
-                already_in_next = set(next_data.get("next_jpgcard", []))
-            print(f"Loaded {len(already_in_next)} URL(s) from previous next_jpgcard.json (will skip re-processing)")
+                next_urls = next_data.get("next_jpgcard", [])
+            print(f"Loaded {len(next_urls)} URL(s) from next_jpgcard.json")
         except Exception as e:
-            print(f"Warning: Could not read existing next_jpgcard.json → {e}")
-            print("   → Creating empty next_jpgcard.json and continuing...")
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump({"next_jpgcard": []}, f, indent=4, ensure_ascii=False)
+            print(f"Corrupted next_jpgcard.json → {e}. Will rebuild.")
+            next_urls = []
+
+    # ------------------------------------------------------------------ #
+    # 5. Count files in jpgfolders
+    # ------------------------------------------------------------------ #
+    image_exts = ('.jpg', '.jpeg', '.png')
+    existing_files = [
+        f for f in os.listdir(jpgfolders_dir)
+        if f.lower().endswith(image_exts)
+    ]
+    file_count = len(existing_files)
+    print(f"Found {file_count} image(s) in jpgfolders")
+
+    # ------------------------------------------------------------------ #
+    # 6. EXACT MATCH VALIDATION (Files + URLs + 1:1 Mapping)
+    # ------------------------------------------------------------------ #
+    def get_filename_from_url(url):
+        return os.path.basename(url.split("?")[0])
+
+    # Extract filenames from URLs
+    url_filenames = {get_filename_from_url(u) for u in next_urls}
+    file_names = {f for f in existing_files}
+
+    # Check 1:1 mapping
+    files_match_urls = file_names == url_filenames
+    url_count_ok = len(next_urls) == cardamount
+    file_count_ok = file_count == cardamount
+
+    print(f"\nVALIDATION CHECK:")
+    print(f"  • Required count       : {cardamount}")
+    print(f"  • Files in folder      : {file_count}")
+    print(f"  • URLs in JSON         : {len(next_urls)}")
+    print(f"  • 1:1 filename match   : {'YES' if files_match_urls else 'NO'}")
+
+    # ------------------------------------------------------------------ #
+    # 7. FINAL DECISION
+    # ------------------------------------------------------------------ #
+    if file_count_ok and url_count_ok and files_match_urls:
+        print(f"\nPERFECT MATCH: {cardamount} files + {cardamount} URLs + 1:1 mapping")
+        print("SKIPPING DOWNLOAD – All data is valid and complete.")
+        return
     else:
-        print("No previous next_jpgcard.json found → creating empty one")
-        with open(json_path, 'w', encoding='utf-8') as f:
+        mismatch_reasons = []
+        if not file_count_ok:
+            mismatch_reasons.append(f"File count ({file_count} ≠ {cardamount})")
+        if not url_count_ok:
+            mismatch_reasons.append(f"URL count ({len(next_urls)} ≠ {cardamount})")
+        if not files_match_urls:
+            mismatch_reasons.append("Filename mismatch between files and URLs")
+
+        print(f"\nMISMATCH DETECTED:")
+        for r in mismatch_reasons:
+            print(f"  → {r}")
+
+        print("DELETING ALL files, downloaded images, and JSON records...")
+        
+        # Delete all in jpgfolders
+        for f in existing_files:
+            try:
+                os.remove(os.path.join(jpgfolders_dir, f))
+                print(f"  [DELETED] {f}")
+            except:
+                pass
+
+        # Delete all in downloaded
+        for f in os.listdir(download_dir):
+            try:
+                path = os.path.join(download_dir, f)
+                if os.path.isfile(path):
+                    os.remove(path)
+            except:
+                pass
+
+        # Reset next_jpgcard.json
+        with open(next_json_path, 'w', encoding='utf-8') as f:
             json.dump({"next_jpgcard": []}, f, indent=4, ensure_ascii=False)
+        print(f"  [RESET] next_jpgcard.json")
+
+        print(f"\nREDOWNLOADING EXACTLY {cardamount} VALID IMAGES...\n")
 
     # ------------------------------------------------------------------ #
-    # 6. Prepare download folder
+    # 8. Download exactly cardamount valid images
     # ------------------------------------------------------------------ #
-    download_root = r'C:\xampp\htdocs\serenum-csv\files\downloaded'
-    download_dir = os.path.join(download_root, author)
-    os.makedirs(download_dir, exist_ok=True)
-    print(f"Images will be downloaded to: {download_dir}")
-
-    # ------------------------------------------------------------------ #
-    # 7. Validate ONLY NEW URLs + DOWNLOAD
-    # ------------------------------------------------------------------ #
-    valid_new_urls = []
-    invalid_count = 0
-    skipped_duplicates = 0
-    skipped_already_next = 0
-    checked_urls = 0
-
-    print(f"\nTarget: {cardamount} NEW valid JPG(s) for author '{author}'")
-    print(f"Base path: {base_path}")
-    print("Validating URLs from fetched list...\n")
+    downloaded = 0
+    valid_urls = []
 
     for url in candidate_urls:
-        checked_urls += 1
+        if downloaded >= cardamount:
+            break
 
-        if url in already_in_next:
-            skipped_already_next += 1
-            if skipped_already_next <= 10 or skipped_already_next % 50 == 0:
-                print(f"  [Skipped – already in next_jpgcard] {url}")
-            continue
-
-        if url in already_uploaded:
-            skipped_duplicates += 1
-            if skipped_duplicates <= 10 or skipped_duplicates % 50 == 0:
-                print(f"  [Skipped – already uploaded] {url}")
-            continue
-
+        print(f"[{downloaded + 1}/{cardamount}] Downloading: {url}")
         is_valid, debug = check_single_url(
             url,
             temp_dir=download_dir,
@@ -741,51 +741,43 @@ def markjpgs():
         )
 
         if is_valid:
-            valid_new_urls.append(url)
-            print(f"  [NEW] {url} ({debug})")
+            valid_urls.append(url)
+            downloaded += 1
+            print(f"  [SUCCESS] {debug}")
         else:
-            invalid_count += 1
-            print(f"  [Invalid] {url} ({debug})")
+            print(f"  [FAILED] {debug}")
 
-        if len(valid_new_urls) >= cardamount:
-            print(f"\nSuccess: Found {len(valid_new_urls)} NEW valid URLs!")
-            break
-
-    if len(valid_new_urls) < cardamount:
-        needed = cardamount - len(valid_new_urls)
-        print(f"\nWarning: Only found {len(valid_new_urls)} new valid URL(s). Need {needed} more.")
-        print("   → Check server or run fetch_urls() again.")
+    if downloaded != cardamount:
+        print(f"\nFAILED: Only {downloaded}/{cardamount} images downloaded successfully.")
+        return
 
     # ------------------------------------------------------------------ #
-    # 8. Save next_jpgcard.json → ONLY URLs
+    # 9. Save next_jpgcard.json
     # ------------------------------------------------------------------ #
     try:
-        data = {
-            "next_jpgcard": valid_new_urls
-        }
-
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-
-        print("\n" + "=" * 70)
-        print(f"SUCCESS: Saved {len(valid_new_urls)} NEW valid link(s) to:")
-        print(f"   {json_path}")
-        print(f"Checked URLs                : {checked_urls}")
-        print(f"New & Valid                 : {len(valid_new_urls)}")
-        print(f"Invalid / Broken            : {invalid_count}")
-        print(f"Skipped (already uploaded)  : {skipped_duplicates}")
-        print(f"Skipped (already in next)   : {skipped_already_next}")
-        print("=" * 70)
-
-        if valid_new_urls:
-            print("\nNew URLs ready for posting (verified + downloaded):")
-            for u in valid_new_urls:
-                print(f"   {u}")
-        else:
-            print("\nNo new valid URLs found.")
-
+        with open(next_json_path, 'w', encoding='utf-8') as f:
+            json.dump({"next_jpgcard": valid_urls}, f, indent=4, ensure_ascii=False)
+        print(f"\nSUCCESS: Saved {len(valid_urls)} valid URLs to next_jpgcard.json")
     except Exception as e:
-        print(f"Failed to write JSON: {e}")
+        print(f"Failed to save JSON: {e}")
+
+    # ------------------------------------------------------------------ #
+    # 10. Final Status
+    # ------------------------------------------------------------------ #
+    print("\n" + "="*80)
+    print("FINAL STATUS – PERFECT SYNC ENFORCED")
+    print("="*80)
+    print(f"Author       : {author}")
+    print(f"Required     : {cardamount}")
+    print(f"Downloaded   : {downloaded}")
+    print(f"jpgfolders   : {jpgfolders_dir}")
+    print(f"Download Dir : {download_dir}")
+    print(f"JSON Path    : {next_json_path}")
+    print(f"Ready for    : crop_and_moveto_jpgs()")
+    print("="*80)
+    print("All files and records are in perfect 1:1 sync.")
+    print("="*80)
+
 
 def update_calendar():
     """Update the calendar and write to JSON, unconditionally."""
@@ -1500,11 +1492,11 @@ def generate_final_csv():
 
 
 def uploadedjpgs():
-    """Move URLs from next_jpgcard.json → uploadedjpgs.json
-       AND move all image files (jpg/jpeg/png/gif) from next_jpg → uploaded_jpgs.
-       Supports LIST or SINGLE STRING in 'next_jpgcard'.
-       Clears next_jpgcard.json and empties next_jpg folder after move.
-       Safe, robust, with full logging."""
+    """Archive VALID URLs from next_jpgcard.json → uploadedjpgs.json
+       AND DELETE **ALL** files from BOTH:
+         - next jpg folder
+         - uploaded jpgs folder
+       Only valid URLs are preserved. Safe, robust, full logging."""
 
     # ------------------------------------------------------------------ #
     # 1. Load configuration
@@ -1525,87 +1517,89 @@ def uploadedjpgs():
         return
 
     # ------------------------------------------------------------------ #
-    # 2. Define paths - RAW STRINGS
+    # 2. Define paths
     # ------------------------------------------------------------------ #
-    next_dir = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
-    uploaded_dir = fr'C:\xampp\htdocs\serenum-csv\files\uploaded jpgs\{author}'
-
+    next_dir       = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
+    uploaded_dir   = fr'C:\xampp\htdocs\serenum-csv\files\uploaded jpgs\{author}'
     next_json_path = os.path.join(next_dir, 'next_jpgcard.json')
     uploaded_json_path = os.path.join(uploaded_dir, 'uploadedjpgs.json')
 
-    # Ensure directories exist
     os.makedirs(next_dir, exist_ok=True)
     os.makedirs(uploaded_dir, exist_ok=True)
 
     # ------------------------------------------------------------------ #
-    # 3. Load next_jpgcard.json (URLs to archive)
+    # 3. Load next_jpgcard.json – keep ONLY valid URLs
     # ------------------------------------------------------------------ #
     next_urls = []
     if os.path.exists(next_json_path):
         try:
             with open(next_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            raw_next = data.get("next_jpgcard")
+            raw = data.get("next_jpgcard")
 
-            if raw_next is None:
-                print("Warning: 'next_jpgcard' missing in JSON.")
-            elif isinstance(raw_next, str):
-                url = raw_next.strip()
-                next_urls = [url] if url else []
-                print(f"Detected SINGLE URL → {len(next_urls)} item")
-            elif isinstance(raw_next, list):
-                next_urls = [url.strip() for url in raw_next if isinstance(url, str) and url.strip()]
-                print(f"Detected LIST → {len(next_urls)} valid URL(s)")
-            else:
-                print(f"Warning: Invalid type for 'next_jpgcard': {type(raw_next)}")
+            if raw is not None:
+                items = [raw] if isinstance(raw, str) else raw
+                for item in items:
+                    if isinstance(item, str):
+                        url = item.strip()
+                        if url.lower().startswith(('http://', 'https://')):
+                            next_urls.append(url)
+                        else:
+                            print(f"Skipped invalid URL: {url}")
         except Exception as e:
             print(f"Failed to read next_jpgcard.json: {e}")
     else:
-        print(f"Info: No next_jpgcard.json found at:\n   {next_json_path}")
+        print(f"Info: No next_jpgcard.json found.")
+
+    print(f"Detected {len(next_urls)} valid URL(s) to archive.")
 
     # ------------------------------------------------------------------ #
-    # 4. Find ALL image files in next_jpg folder
+    # 4. Delete ALL files from next jpg folder
     # ------------------------------------------------------------------ #
-    image_extensions = ('.jpg', '.jpeg', '.png', '.gif')
-    image_files = [
-        f for f in os.listdir(next_dir)
-        if f.lower().endswith(image_extensions) and os.path.isfile(os.path.join(next_dir, f))
-    ]
+    next_files = [f for f in os.listdir(next_dir) if os.path.isfile(os.path.join(next_dir, f))]
+    next_deleted = 0
+    next_failed = []
 
-    moved_files_count = 0
-    failed_moves = []
-
-    print(f"\nFound {len(image_files)} image file(s) to move:")
-    for img in image_files:
-        print(f"   → {img}")
-
-    # ------------------------------------------------------------------ #
-    # 5. Move image files to uploaded_jpgs folder
-    # ------------------------------------------------------------------ #
-    if image_files:
-        for img_name in image_files:
-            src_path = os.path.join(next_dir, img_name)
-            dst_path = os.path.join(uploaded_dir, img_name)
-
+    if next_files:
+        print(f"\nDeleting {len(next_files)} file(s) from next jpg:")
+        for f in next_files:
+            path = os.path.join(next_dir, f)
             try:
-                # Avoid overwrite: append (1), (2), etc. if exists
-                base, ext = os.path.splitext(img_name)
-                counter = 1
-                original_dst = dst_path
-                while os.path.exists(dst_path):
-                    new_name = f"{base} ({counter}){ext}"
-                    dst_path = os.path.join(uploaded_dir, new_name)
-                    counter += 1
-
-                shutil.move(src_path, dst_path)
-                moved_files_count += 1
-                print(f"   Moved: {img_name} → uploaded jpgs")
+                os.remove(path)
+                next_deleted += 1
+                print(f"   Deleted: next jpg/{f}")
             except Exception as e:
-                failed_moves.append((img_name, str(e)))
-                print(f"   Failed to move {img_name}: {e}")
+                next_failed.append((f, str(e)))
+                print(f"   Failed: {f} → {e}")
+    else:
+        print("\nnext jpg folder already empty.")
 
     # ------------------------------------------------------------------ #
-    # 6. Load existing uploadedjpgs.json (URLs)
+    # 5. Delete ALL files from uploaded jpgs folder (except JSON)
+    # ------------------------------------------------------------------ #
+    uploaded_files = [
+        f for f in os.listdir(uploaded_dir)
+        if os.path.isfile(os.path.join(uploaded_dir, f)) and f != 'uploadedjpgs.json'
+    ]
+    uploaded_deleted = 0
+    uploaded_failed = []
+
+    if uploaded_files:
+        print(f"\nDeleting {len(uploaded_files)} file(s) from uploaded jpgs:")
+        for f in uploaded_files:
+            path = os.path.join(uploaded_dir, f)
+            try:
+                os.remove(path)
+                uploaded_deleted += 1
+                print(f"   Deleted: uploaded jpgs/{f}")
+            except Exception as e:
+                uploaded_failed.append((f, str(e)))
+                print(f"   Failed: {f} → {e}")
+    else:
+        print("\nuploaded jpgs folder has no extra files.")
+
+    # ------------------------------------------------------------------ #
+    # 6. Load existing uploadedjpgs.json – keep ONLY valid URLs
     # ------------------------------------------------------------------ #
     existing_uploaded = []
     if os.path.exists(uploaded_json_path):
@@ -1613,28 +1607,21 @@ def uploadedjpgs():
             with open(uploaded_json_path, 'r', encoding='utf-8') as f:
                 existing_data = json.load(f)
                 raw = existing_data.get("uploaded_jpgs", [])
-                if isinstance(raw, list):
-                    existing_uploaded = [u.strip() for u in raw if isinstance(u, str) and u.strip()]
-                elif isinstance(raw, str):
-                    url = raw.strip()
-                    existing_uploaded = [url] if url else []
-                    print("Fixed: 'uploaded_jpgs' was string → converted to list.")
+                candidates = [raw] if isinstance(raw, str) else raw
+                for u in candidates:
+                    if isinstance(u, str) and u.strip().lower().startswith(('http://', 'https://')):
+                        existing_uploaded.append(u.strip())
         except Exception as e:
             print(f"Warning: Could not read uploadedjpgs.json: {e}")
 
-    print(f"Found {len(existing_uploaded)} previously recorded uploaded URLs.")
+    print(f"Found {len(existing_uploaded)} previously valid URLs.")
 
     # ------------------------------------------------------------------ #
     # 7. Combine & deduplicate URLs
     # ------------------------------------------------------------------ #
     all_urls = existing_uploaded + next_urls
-    unique_urls = []
-    seen = set()
-    for url in all_urls:
-        if url not in seen:
-            seen.add(url)
-            unique_urls.append(url)
-    newly_added_urls = len(unique_urls) - len(existing_uploaded)
+    unique_urls = list(dict.fromkeys(all_urls))  # Preserves order
+    newly_added = len(unique_urls) - len(existing_uploaded)
 
     # ------------------------------------------------------------------ #
     # 8. Save updated uploadedjpgs.json
@@ -1643,38 +1630,39 @@ def uploadedjpgs():
 
     uploaded_data = {
         "uploaded_jpgs": unique_urls,
-        "last_moved_from_next": timestamp,
+        "last_cleared": timestamp,
         "total_uploaded": len(unique_urls),
-        "moved_this_time_urls": len(next_urls),
-        "newly_added_urls": newly_added_urls,
-        "moved_files_count": moved_files_count,
-        "failed_file_moves": [f"{name}: {err}" for name, err in failed_moves],
+        "urls_added_this_time": len(next_urls),
+        "new_unique_urls": newly_added,
+        "next_jpg_files_deleted": next_deleted,
+        "uploaded_jpgs_files_deleted": uploaded_deleted,
+        "failed_deletes_next": [f"{n}: {e}" for n, e in next_failed],
+        "failed_deletes_uploaded": [f"{n}: {e}" for n, e in uploaded_failed],
         "author": author
     }
 
     try:
         with open(uploaded_json_path, 'w', encoding='utf-8') as f:
             json.dump(uploaded_data, f, indent=4, ensure_ascii=False)
-        print(f"\nSaved updated uploadedjpgs.json → {len(unique_urls)} total URLs")
+        print(f"\nSaved uploadedjpgs.json → {len(unique_urls)} clean URLs")
     except Exception as e:
-        print(f"Failed to write uploadedjpgs.json: {e}")
+        print(f"Failed to write JSON: {e}")
         return
 
     # ------------------------------------------------------------------ #
     # 9. Clear next_jpgcard.json
     # ------------------------------------------------------------------ #
     try:
-        cleared_data = {
+        cleared = {
             "next_jpgcard": [],
             "timestamp": timestamp,
             "total_checked": data.get("total_checked", 0) if 'data' in locals() else 0,
-            "total_valid": 0,
-            "total_invalid": data.get("total_invalid", 0) if 'data' in locals() else 0,
-            "note": "Cleared by uploadedjpgs() – URLs moved + files relocated"
+            "total_valid": len(next_urls),
+            "note": "Cleared by uploadedjpgs() – ALL files deleted from both folders"
         }
         with open(next_json_path, 'w', encoding='utf-8') as f:
-            json.dump(cleared_data, f, indent=4, ensure_ascii=False)
-        print(f"Cleared next_jpgcard.json")
+            json.dump(cleared, f, indent=4, ensure_ascii=False)
+        print("Cleared next_jpgcard.json")
     except Exception as e:
         print(f"Warning: Could not clear next_jpgcard.json: {e}")
 
@@ -1682,16 +1670,16 @@ def uploadedjpgs():
     # 10. Final Summary
     # ------------------------------------------------------------------ #
     print("\n" + "="*70)
-    print(f" SUMMARY FOR @{author.upper()}")
-    print(f"   URLs moved     : {len(next_urls)} → {newly_added_urls} new")
-    print(f"   Files moved    : {moved_files_count} image(s)")
-    if failed_moves:
-        print(f"   Failed moves   : {len(failed_moves)}")
-    print(f"   Total archived : {len(unique_urls)} URLs")
-    print(f"   Folder cleared : next jpg → uploaded jpgs")
+    print(f" FULL CLEANUP COMPLETE FOR @{author.upper()}")
+    print(f"   URLs archived       : {len(next_urls)} → {newly_added} new")
+    print(f"   next jpg deleted    : {next_deleted} file(s)")
+    print(f"   uploaded jpgs deleted: {uploaded_deleted} file(s)")
+    if next_failed: print(f"   next failed         : {len(next_failed)}")
+    if uploaded_failed: print(f"   uploaded failed     : {len(uploaded_failed)}")
+    print(f"   Total valid URLs    : {len(unique_urls)}")
+    print(f"   Both folders now clean (except uploadedjpgs.json)")
     print("="*70)
-
-    print(f"\nAll done! Ready for next batch.")
+    print(f"\nReady for fresh upload cycle. @teamxtech")
 
 
 
@@ -1993,6 +1981,6 @@ def main():
 
 
 if __name__ == "__main__":
-   update_calendar()
+   markjpgs()
    
 
