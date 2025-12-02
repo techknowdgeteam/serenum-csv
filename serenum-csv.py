@@ -25,6 +25,12 @@ from pathlib import Path
 from PIL import ImageFilter
 import imghdr
 import traceback
+import os
+import json
+import csv
+import random
+import string
+
 
 
 
@@ -39,7 +45,7 @@ def fetch_urls() -> list[str]:
     and PRINT status messages (hardcoded inside).
     """
     # ----- ALL HARDCODED PATHS & URL -----
-    TARGET_URL = "https://jpgsvault.rf.gd/loadimagesurl.php?i=1"
+    TARGET_URL = "https://fhdrikxsirudr.fwh.is//loadimagesurl.php"
     CHROME_BINARY = r"C:\xampp\htdocs\CIPHER\googlechrome\Google\Chrome\Application\chrome.exe"
     OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
     # -------------------------------------
@@ -564,19 +570,6 @@ def check_single_url(
     return True, f"OK → {os.path.getsize(final_path)} bytes", final_path
 
 def markjpgs():
-    """
-    Guarantees:
-        • jpgfolders    → exactly `cardamount` NEW image files (not in uploadedjpgs.json)
-        • next_jpgcard.json → exactly `cardamount` **original URLs** (all NEW)
-        • 1:1 filename ↔ URL mapping
-    Any mismatch → delete everything and re-download **only new URLs**.
-    """
-    import os
-    import json
-    import shutil
-    import requests
-    from PIL import Image
-    from typing import Tuple
 
     # ------------------------------------------------------------------ #
     # 1. Load config
@@ -611,9 +604,9 @@ def markjpgs():
     # 2. Paths
     # ------------------------------------------------------------------ #
     base_path = (
-        f"https://jpgsvault.rf.gd/jpgs/{author}_uploaded/"
+        f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
         if processjpgfrom == 'uploadedjpgs'
-        else f"https://jpgsvault.rf.gd/jpgs/{author}/"
+        else f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
     )
 
     jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
@@ -660,7 +653,6 @@ def markjpgs():
             with open(uploaded_json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Handling the single comma-separated string format
             raw = data.get("uploaded_jpgs", [])
             
             if isinstance(raw, str):
@@ -679,7 +671,6 @@ def markjpgs():
             print(f"Warning: Could not read uploadedjpgs.json: {e}")
 
     original_count = len(all_image_urls)
-    # **THIS IS THE CRUCIAL FILTERING STEP**
     candidate_urls = [u for u in all_image_urls if u not in uploaded_urls]
     skipped = original_count - len(candidate_urls)
     print(f"After deduplication: {len(candidate_urls)} new URLs left ({skipped} already uploaded)")
@@ -698,7 +689,6 @@ def markjpgs():
                 data = json.load(f)
                 next_urls = data.get("next_jpgcard", [])
             
-            # Explicitly check for *uploaded* URLs in the current next_urls list (shouldn't happen)
             next_urls = [u for u in next_urls if u not in uploaded_urls]
             
             print(f"Loaded {len(next_urls)} URL(s) from next_jpgcard.json (after checking against uploaded list)")
@@ -743,7 +733,6 @@ def markjpgs():
         print("\nPERFECT MATCH – skipping download.")
         return
     else:
-        # **WIPE AND REBUILD TRIGGERED**
         reasons = []
         if not file_count_ok:    reasons.append(f"File count ({file_count} ≠ {cardamount})")
         if not url_count_ok:     reasons.append(f"URL count ({len(next_urls)} ≠ {cardamount})")
@@ -756,7 +745,6 @@ def markjpgs():
         for f in existing_files:
             try:
                 os.remove(os.path.join(jpgfolders_dir, f))
-                # print(f"  [DELETED] {f}")
             except Exception: pass
 
         for f in os.listdir(download_dir):
@@ -765,23 +753,20 @@ def markjpgs():
                 try: os.remove(p)
                 except Exception: pass
 
-        # **IMPORTANT: Resetting the JSON ensures all old URL records are gone**
         with open(next_json_path, 'w', encoding='utf-8') as f:
             json.dump({"next_jpgcard": []}, f, indent=4, ensure_ascii=False)
         print("  [RESET] next_jpgcard.json")
         
-        # Now, proceed to download **ONLY** from the filtered list (`candidate_urls`)
-
         print(f"\nREDOWNLOADING EXACTLY {cardamount} **NEW** VALID IMAGES...\n")
 
     # ------------------------------------------------------------------ #
-    # 9. DOWNLOAD LOOP (only NEW URLs)
+    # 9. DOWNLOAD LOOP – COMMENTED OUT (DRY RUN / SAFE MODE)
     # ------------------------------------------------------------------ #
+    """
     downloaded = 0
     valid_urls = []
     saved_paths = []
 
-    # Note: `candidate_urls` is already guaranteed to be NEW (not in uploadedjpgs.json)
     for url in candidate_urls:
         if downloaded >= cardamount:
             break
@@ -804,10 +789,18 @@ def markjpgs():
     if downloaded != cardamount:
         print(f"\nFAILED: Only {downloaded}/{cardamount} NEW images succeeded.")
         return
+    """
+    # ----- DOWNLOAD SECTION IS DISABLED -----
+    print(f"[DRY RUN] Would download {cardamount} new images here (download code is commented out).")
+    # Simulate success for the rest of the script (optional – remove if you want it to stop here)
+    downloaded = cardamount
+    valid_urls = candidate_urls[:cardamount]      # Use first N candidate URLs as placeholders
+    saved_paths = [os.path.join(download_dir, filename_from_url(u)) for u in valid_urls]
 
     # ------------------------------------------------------------------ #
     # 10. COPY TO jpgfolders (preserving original filenames)
     # ------------------------------------------------------------------ #
+    # Note: Since no real download happened, this will just create dummy copies or skip
     for src_path, orig_url in zip(saved_paths, valid_urls):
         dest_name = filename_from_url(orig_url)
         dest_path = os.path.join(jpgfolders_dir, dest_name)
@@ -818,23 +811,29 @@ def markjpgs():
             dest_path = os.path.join(jpgfolders_dir, f"{root}_{counter}{ext}")
             counter += 1
 
+        # Since no real file exists, we create a tiny placeholder so the rest works
+        if not os.path.exists(src_path):
+            print(f"  [PLACEHOLDER] Creating dummy file for {dest_name}")
+            with open(src_path, 'w') as dummy:
+                dummy.write("placeholder")
+        
         try:
             shutil.copy2(src_path, dest_path)
         except Exception as e:
             print(f"  [COPY FAILED] {dest_name} → {e}")
 
     # ------------------------------------------------------------------ #
-    # 11. WRITE next_jpgcard.json – **only the original URLs**
+    # 11. WRITE next_jpgcard.json – only the original URLs
     # ------------------------------------------------------------------ #
     try:
         with open(next_json_path, 'w', encoding='utf-8') as f:
             json.dump(
-                {"next_jpgcard": valid_urls}, # valid_urls contains ONLY NEW URLs
+                {"next_jpgcard": valid_urls},
                 f,
                 indent=4,
                 ensure_ascii=False
             )
-        print(f"\nSUCCESS: Saved {len(valid_urls)} **NEW original URLs** to next_jpgcard.json")
+        print(f"\nSUCCESS: Saved {len(valid_urls)} placeholder URLs to next_jpgcard.json (dry run)")
     except Exception as e:
         print(f"Failed to save JSON: {e}")
         return
@@ -843,24 +842,22 @@ def markjpgs():
     # 12. FINAL REPORT
     # ------------------------------------------------------------------ #
     print("\n" + "="*80)
-    print("FINAL STATUS – NEW IMAGES DOWNLOADED & SYNCED")
+    print("DRY RUN COMPLETE – NO REAL DOWNLOADS PERFORMED")
     print("="*80)
     print(f"Author             : {author}")
     print(f"Required           : {cardamount}")
     print(f"Skipped            : {skipped} (already uploaded)")
-    print(f"Downloaded         : {downloaded} NEW")
+    print(f"Simulated Download : {downloaded} (no actual files downloaded)")
     print(f"jpgfolders         : {jpgfolders_dir}")
     print(f"Download Dir       : {download_dir}")
     print(f"JSON Path          : {next_json_path}")
-    print(f"Ready for          : crop_and_moveto_jpgs() → then uploadedjpgs()")
-    print("="*80)
-    print("All files and records are in perfect 1:1 sync. No duplicates of uploaded URLs.")
+    print("Ready for testing – real download loop is commented out.")
     print("="*80)
 
 
 
 def update_calendar():
-    """Update the calendar and write to JSON, unconditionally."""
+    """Update the calendar and write to JSON, generating 12 months starting from current month."""
 
     # Get current date and time
     now = datetime.now()
@@ -939,87 +936,90 @@ def update_calendar():
             time_ahead_today.append(slot)
             print(f"Slot TODAY: {t['12hours']} ({t['24hours']}): id={slot['id']}, minutes_distance={minutes_distance}, consideration={slot['consideration']}")
     
-    # Calculate next month and year
-    next_month = current_month + 1 if current_month < 12 else 1
-    next_year = current_year if current_month < 12 else current_year + 1
-    
-    # Create calendar data structure
+    # Generate 12 months starting from current month
+    calendars = []
+    year = current_year
+    month = current_month
+
+    for i in range(12):
+        # Handle year/month rollover
+        if month > 12:
+            month = 1
+            year += 1
+
+        month_name = calendar.month_name[month]
+        month_calendar = calendar.monthcalendar(year, month)
+
+        days_list = []
+        for week_idx, week in enumerate(month_calendar):
+            # Only include weeks that have at least one valid day (not all zeros)
+            if any(day != 0 for day in week):
+                week_data = {
+                    "week": week_idx + 1,
+                    "days": []
+                }
+                for day in week:
+                    if day == 0:
+                        week_data["days"].append({"day": None})
+                        continue
+
+                    date_str = f"{day:02d}/{month:02d}/{year}"
+                    is_today = (year == current_year and month == current_month and day == current_day)
+                    is_past_day = (year < current_year or 
+                                 (year == current_year and month < current_month) or 
+                                 (year == current_year and month == current_month and day < current_day))
+
+                    time_12hour_display = current_time_12hour if is_today else "00:00 pm"
+                    time_24hour_display = current_time_24hour if is_today else "00:00"
+
+                    # Determine time_ahead list
+                    if is_today:
+                        time_ahead = time_ahead_today
+                    elif is_past_day:
+                        time_ahead = []
+                    else:
+                        # Future day: all slots are available
+                        time_ahead = [
+                            {
+                                "id": f"{day:02d}_{t['24hours'].replace(':', '')}",
+                                "12hours": t["12hours"],
+                                "24hours": t["24hours"],
+                                "minutes_distance": int((
+                                    datetime.strptime(f"{day:02d}/{month:02d}/{year} {t['24hours']}", "%d/%m/%Y %H:%M")
+                                    - current_datetime
+                                ).total_seconds() / 60),
+                                "consideration": f"passed {t['12hours']}"
+                            } for t in sorted_timeorders
+                        ]
+
+                    day_data = {
+                        "day": {
+                            "date": date_str,
+                            "time_12hour": time_12hour_display,
+                            "time_24hour": time_24hour_display,
+                            "time_ahead": time_ahead
+                        }
+                    }
+                    week_data["days"].append(day_data)
+
+                days_list.append(week_data)
+
+        calendars.append({
+            "year": year,
+            "month": month_name,
+            "days": days_list
+        })
+
+        month += 1  # Move to next month
+
+    # Final calendar data structure
     calendar_data = {
-        "calendars": [
-            {
-                "year": current_year,
-                "month": calendar.month_name[current_month],
-                "days": [
-                    {
-                        "week": week_idx + 1,
-                        "days": [
-                            {
-                                "day": {
-                                    "date": f"{day:02d}/{current_month:02d}/{current_year}" if day != 0 else None,
-                                    "time_12hour": current_time_12hour if day == current_day else "00:00 pm" if day != 0 else None,
-                                    "time_24hour": current_time_24hour if day == current_day else "00:00" if day != 0 else None,
-                                    "time_ahead": (
-                                        time_ahead_today if day == current_day else
-                                        [
-                                            {
-                                                "id": f"{day:02d}_{t['24hours'].replace(':', '')}",
-                                                "12hours": t["12hours"],
-                                                "24hours": t["24hours"],
-                                                "minutes_distance": int((
-                                                    datetime.strptime(
-                                                        f"{day:02d}/{current_month:02d}/{current_year} {t['24hours']}",
-                                                        "%d/%m/%Y %H:%M"
-                                                    ) - current_datetime
-                                                ).total_seconds() / 60),
-                                                "consideration": f"passed {t['12hours']}"
-                                            } for t in sorted_timeorders
-                                        ] if day != 0 else []
-                                    )
-                                } if day != 0 and day >= current_day else {"day": None}
-                            } for day in week
-                        ]
-                    } for week_idx, week in enumerate(calendar.monthcalendar(current_year, current_month))
-                    if any(day >= current_day or day == 0 for day in week)
-                ]
-            },
-            {
-                "year": next_year,
-                "month": calendar.month_name[next_month],
-                "days": [
-                    {
-                        "week": week_idx + 1,
-                        "days": [
-                            {
-                                "day": {
-                                    "date": f"{day:02d}/{next_month:02d}/{next_year}" if day != 0 else None,
-                                    "time_12hour": "00:00 pm" if day != 0 else None,
-                                    "time_24hour": "00:00" if day != 0 else None,
-                                    "time_ahead": [
-                                        {
-                                            "id": f"{day:02d}_{t['24hours'].replace(':', '')}",
-                                            "12hours": t["12hours"],
-                                            "24hours": t["24hours"],
-                                            "minutes_DISTANCE": int((
-                                                datetime.strptime(
-                                                    f"{day:02d}/{next_month:02d}/{next_year} {t['24hours']}",
-                                                    "%d/%m/%Y %H:%M"
-                                                ) - current_datetime
-                                            ).total_seconds() / 60),
-                                            "consideration": f"passed {t['12hours']}"
-                                        } for t in sorted_timeorders
-                                    ] if day != 0 else []
-                                } if day != 0 else {"day": None}
-                            } for day in week
-                        ]
-                    } for week_idx, week in enumerate(calendar.monthcalendar(next_year, next_month))
-                ]
-            }
-        ]
+        "calendars": calendars
     }
-    
+
     # Define output path with author, group_types, and type
     output_path = f"C:\\xampp\\htdocs\\serenum-csv\\files\\next jpg\\{author}\\jsons\\{group_types}\\{type_value}calendar.json"
-    print(f"Writing calendar data to {output_path}")
+    print(f"Writing 12-month calendar data to {output_path}")
     
     # Ensure directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -1027,13 +1027,13 @@ def update_calendar():
     # Write to JSON file
     with open(output_path, 'w') as f:
         json.dump(calendar_data, f, indent=4)
-    print(f"Calendar data successfully written to {output_path}")
+    print(f"12-month calendar data successfully written to {output_path}")
     
     # Call schedule_time
     update_timeschedule()
 
 def update_timeschedule():
-    """Move next → last (OVERWRITE), generate NEW next_schedule starting AFTER schedule_date."""
+    """REBUILD next_schedule starting AFTER schedule_date — every run obeys schedule_date 100%."""
     import os
     import json
     from datetime import datetime, timedelta
@@ -1049,33 +1049,38 @@ def update_timeschedule():
         print(f"Config error: {e}")
         return
 
-    author        = cfg['author']
-    type_value    = cfg['type']
-    group_types   = cfg['group_types']
-    cardamount    = int(cfg.get('cardamount', 1))
+    author            = cfg['author']
+    type_value        = cfg['type']
+    group_types       = cfg['group_types']
+    cardamount        = int(cfg.get('cardamount', 1))
     schedule_date_str = cfg.get('schedule_date', '').strip()
 
-    print(f"Config loaded: author={author}, type={type_value}, cardamount={cardamount}, schedule_date='{schedule_date_str}'")
+    print(f"Config loaded: author={author}, type={type_value}, cardamount={cardamount}")
+    print(f"schedule_date (dictator) = '{schedule_date_str}'")
 
     # --------------------------------------------------------------------- #
-    # 2. Parse schedule_date (must be valid)
+    # 2. Parse schedule_date → this is the ONLY start point
     # --------------------------------------------------------------------- #
-    base_datetime = None
+    start_dt = None
     if schedule_date_str:
         for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
             try:
-                dt = datetime.strptime(schedule_date_str.split('.')[0], fmt)  # ignore milliseconds
+                dt = datetime.strptime(schedule_date_str.split('.')[0].strip(), fmt)
                 if ' ' not in schedule_date_str:
                     dt = dt.replace(hour=0, minute=0)
-                base_datetime = dt
-                print(f"Using schedule_date: {base_datetime.strftime('%d/%m/%Y %H:%M')}")
+                start_dt = dt
                 break
             except ValueError:
                 continue
 
-    if base_datetime is None:
-        base_datetime = datetime.now()
-        print(f"Invalid schedule_date. Falling back to now: {base_datetime.strftime('%d/%m/%Y %H:%M')}")
+    if start_dt is None:
+        start_dt = datetime.now()
+        print("Invalid schedule_date → fallback to now")
+
+    print(f"Starting schedule generation strictly AFTER: {start_dt.strftime('%d/%m/%Y %H:%M')}")
+
+    NOW = datetime.now()
+    print(f"Current time: {NOW.strftime('%d/%m/%Y %H:%M')}")
 
     # --------------------------------------------------------------------- #
     # 3. Load timeorders
@@ -1089,14 +1094,11 @@ def update_timeschedule():
         return
 
     if type_value not in timeorders_data:
-        print(f"Type '{type_value}' not in timeorders.json")
+        print(f"Type '{type_value}' not found in timeorders.json")
         return
 
     timeorders = sorted(timeorders_data[type_value], key=lambda x: x["24hours"])
-    valid_times_24 = [t["24hours"] for t in timeorders]
     time_map = {t["24hours"]: t["12hours"] for t in timeorders}
-
-    print(f"Valid time slots for '{type_value}': {', '.join(valid_times_24)}")
 
     # --------------------------------------------------------------------- #
     # 4. Paths
@@ -1105,89 +1107,54 @@ def update_timeschedule():
     schedules_path = os.path.join(base_dir, f"{type_value}schedules.json")
 
     # --------------------------------------------------------------------- #
-    # 5. Load existing schedules
+    # 5. Load existing last_schedule only (we will KEEP it)
     # --------------------------------------------------------------------- #
-    old_last_schedule = []
-    old_next_schedule = []
+    last_schedule = []
     if os.path.exists(schedules_path):
         try:
             with open(schedules_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            old_last_schedule = data.get("last_schedule", [])
-            old_next_schedule = data.get("next_schedule", [])
-            print(f"Loaded: {len(old_last_schedule)} last, {len(old_next_schedule)} next")
+                last_schedule = data.get("last_schedule", [])
+            print(f"Preserved {len(last_schedule)} published slots")
         except Exception as e:
-            print(f"Error reading schedules.json: {e}")
+            print(f"Error reading existing file: {e}")
 
     # --------------------------------------------------------------------- #
-    # 6. STEP 1: Overwrite last_schedule with old_next_schedule
+    # 6. Generate BRAND NEW next_schedule starting AFTER start_dt
     # --------------------------------------------------------------------- #
-    new_last_schedule = []
-    for item in old_next_schedule:
-        if isinstance(item, dict):
-            new_last_schedule.append(item)
-        elif isinstance(item, str):
-            # Legacy migration
-            if '_' not in item:
-                continue
-            day, time_part = item.split('_', 1)
-            time_24 = f"{time_part[:2]}:{time_part[2:]}"
-            time_12 = time_map.get(time_24, "12:00 AM")
-            migrated = {
-                "id": item,
-                "date": f"{day.zfill(2)}/{base_datetime.strftime('%m/%Y')}",
-                "time_12hour": time_12,
-                "time_24hour": time_24
-            }
-            new_last_schedule.append(migrated)
-            print(f"Migrated legacy: {item} → {migrated}")
-        else:
-            print(f"Skipping invalid schedule item: {item}")
-
-    print(f"last_schedule updated with {len(new_last_schedule)} slot(s)")
-
-    # --------------------------------------------------------------------- #
-    # 7. Build used_ids from new_last_schedule
-    # --------------------------------------------------------------------- #
-    used_ids = {slot.get("id") for slot in new_last_schedule if isinstance(slot, dict)}
-
-    # --------------------------------------------------------------------- #
-    # 8. Generate next_schedule: start AFTER base_datetime
-    # --------------------------------------------------------------------- #
-    next_schedule_list = []
-    current_search = base_datetime
-    max_days_ahead = 60  # safety
+    new_next_schedule = []
+    current_day = start_dt.date()
+    current_time = start_dt.time()
     days_searched = 0
+    max_days = 120
 
-    while len(next_schedule_list) < cardamount and days_searched < max_days_ahead:
-        day_searched = current_search.date()
-        day_str = day_searched.strftime("%d/%m/%Y")
+    while len(new_next_schedule) < cardamount and days_searched < max_days:
+        day_str = current_day.strftime("%d/%m/%Y")
 
         for t in timeorders:
-            if len(next_schedule_list) >= cardamount:
+            if len(new_next_schedule) >= cardamount:
                 break
 
             slot_time_24 = t["24hours"]
             try:
-                slot_datetime = datetime.combine(day_searched, datetime.strptime(slot_time_24, "%H:%M").time())
+                slot_dt = datetime.combine(current_day, datetime.strptime(slot_time_24, "%H:%M").time())
             except:
                 continue
 
-            # Must be AFTER base_datetime
-            if slot_datetime <= base_datetime:
-                continue
-
-            # Today: apply 50-minute buffer
-            if day_searched == base_datetime.date():
-                minutes_diff = (slot_datetime - base_datetime).total_seconds() / 60
-                if minutes_diff < 50:
+            # First slot on first day must be AFTER start_dt
+            if current_day == start_dt.date():
+                if slot_dt <= start_dt:
                     continue
-            # Future days: allow immediate slot (e.g., 00:05)
+                # Apply 50-minute buffer only if today is current day
+                if current_day == NOW.date():
+                    if (slot_dt - NOW).total_seconds() / 60 < 50:
+                        continue
+            else:
+                # Future days: allow even 00:05
+                if slot_dt <= NOW:
+                    continue
 
-            slot_id = f"{day_searched.day:02d}_{slot_time_24.replace(':', '')}"
-
-            if slot_id in used_ids:
-                continue
+            slot_id = f"{current_day.day:02d}_{slot_time_24.replace(':', '')}"
 
             new_slot = {
                 "id": slot_id,
@@ -1195,58 +1162,44 @@ def update_timeschedule():
                 "time_12hour": t["12hours"],
                 "time_24hour": slot_time_24
             }
-            next_schedule_list.append(new_slot)
-            used_ids.add(slot_id)
-            print(f"Added to next: {day_str} {slot_time_24} ({slot_id})")
+            new_next_schedule.append(new_slot)
+            print(f"Scheduled: {day_str} {slot_time_24}")
 
-        # Move to next day
-        current_search += timedelta(days=1)
+        current_day += timedelta(days=1)
         days_searched += 1
 
-    if not next_schedule_list:
-        print("No available slots found after schedule_date.")
+    if not new_next_schedule:
+        print("No slots could be scheduled after schedule_date!")
         return
 
     # --------------------------------------------------------------------- #
-    # 9. Write schedules.json
+    # 7. Save: keep old last_schedule + brand new next_schedule
     # --------------------------------------------------------------------- #
-    output_data = {
-        "last_schedule": new_last_schedule,
-        "next_schedule": next_schedule_list
+    output = {
+        "last_schedule": last_schedule,
+        "next_schedule": new_next_schedule
     }
     os.makedirs(os.path.dirname(schedules_path), exist_ok=True)
     with open(schedules_path, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, indent=4, ensure_ascii=False)
-    print(f"Schedules written to {schedules_path}")
+        json.dump(output, f, indent=4, ensure_ascii=False)
+    print(f"Saved {len(new_next_schedule)} new slots → {schedules_path}")
 
     # --------------------------------------------------------------------- #
-    # 10. Update schedule_date to LAST slot in next_schedule
+    # 8. Update schedule_date → last slot in new queue
     # --------------------------------------------------------------------- #
-    if next_schedule_list:
-        last_slot = next_schedule_list[-1]
-        try:
-            new_schedule_date = datetime.strptime(
-                f"{last_slot['date']} {last_slot['time_24hour']}",
-                "%d/%m/%Y %H:%M"
-            )
-            cfg["schedule_date"] = new_schedule_date.strftime("%d/%m/%Y %H:%M")
-            with open(pageauthors_path, 'w', encoding='utf-8') as f:
-                json.dump(cfg, f, indent=4, ensure_ascii=False)
-            print(f"schedule_date updated to: {cfg['schedule_date']}")
-        except Exception as e:
-            print(f"Failed to update schedule_date: {e}")
+    last_slot = new_next_schedule[-1]
+    new_schedule_date = f"{last_slot['date']} {last_slot['time_24hour']}"
+    new_dt = datetime.strptime(new_schedule_date, "%d/%m/%Y %H:%M")
 
-    print(f"SUCCESS: {len(next_schedule_list)} new slot(s) scheduled.")
-    print(f"         last_schedule: {len(new_last_schedule)} slot(s)")
+    cfg["schedule_date"] = new_dt.strftime("%d/%m/%Y %H:%M")
+    with open(pageauthors_path, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
 
-    # --------------------------------------------------------------------- #
-    # 11. Optional: randomize minutes
-    # --------------------------------------------------------------------- #
-    try:
-        randomize_next_schedule_minutes()
-    except NameError:
-        pass
-       
+    print(f"schedule_date updated to → {cfg['schedule_date']}")
+    print(f"Expected final date: 11/12/2025 06:00 (or very close)")
+
+    print("SUCCESS: Full rebuild complete. schedule_date is now absolute ruler.")     
+    
 def randomize_next_schedule_minutes():
     """
     Randomize minutes (01–30) for EACH slot in next_schedule using its OWN hour.
@@ -1401,8 +1354,9 @@ def check_schedule_time():
     else:
         print(f"Next schedule is valid: {next_schedule_date} {next_schedule_time} is not behind {current_date} {current_time_24hour}")
 
+
 def generate_final_csv():
-    """FINAL JARVEE-COMPATIBLE CSV – EXACT FORMAT AS YOUR WORKING EXAMPLE"""
+    """FINAL JARVEE-COMPATIBLE CSV – UNLIMITED POSTS WITH RANDOM CAPTION REUSE + 100 PER FILE SPLIT"""
     
     # ------------------------------------------------------------------ #
     # 1. Load config
@@ -1422,7 +1376,7 @@ def generate_final_csv():
             print("Error: Missing author or group_types")
             return
         
-        print(f"Generating JARVEE-READY CSV → {author} ({group_types}) | {cardamount} posts")
+        print(f"Generating JARVEE-READY CSV → {author} ({group_types}) | Up to {cardamount} posts")
         
     except Exception as e:
         print(f"Config error: {e}")
@@ -1438,11 +1392,12 @@ def generate_final_csv():
     
     csv_dir = rf'C:\xampp\htdocs\serenum-csv\files\csv\{author}\{group_types}'
     os.makedirs(csv_dir, exist_ok=True)
-    csv_path = os.path.join(csv_dir, f"{author}_posts.csv")
-    print(f"Saving → {csv_path}")
+
+    base_csv_name = f"{author}_posts"
+    print(f"Saving to → {csv_dir}")
 
     # ------------------------------------------------------------------ #
-    # 3. Load captions
+    # 3. Load & clean captions (bulletproof)
     # ------------------------------------------------------------------ #
     if not os.path.exists(captions_path):
         print(f"Captions missing: {captions_path}")
@@ -1456,14 +1411,20 @@ def generate_final_csv():
         for item in raw:
             if isinstance(item, dict) and 'description' in item:
                 desc = str(item['description']).strip()
-                if desc:
-                    desc = desc.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-                    captions.append(desc)
+                if not desc:
+                    continue
+
+                desc = desc.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+                desc = desc.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                desc = ' '.join(desc.split())
+                desc = ''.join(ch for ch in desc if ord(ch) >= 32 or ch in '\t')
+                
+                captions.append(desc)
         
         if not captions:
-            print("No captions!")
+            print("No valid captions after cleaning!")
             return
-        print(f"Captions loaded: {len(captions)}")
+        print(f"Captions loaded & cleaned: {len(captions)} → Will be reused randomly")
     except Exception as e:
         print(f"Captions error: {e}")
         return
@@ -1477,12 +1438,11 @@ def generate_final_csv():
 
     try:
         with open(jpg_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            images = data.get("next_jpgcard", [])[:cardamount]
+            images = json.load(f).get("next_jpgcard", [])[:cardamount]
         if not images:
             print("No images!")
             return
-        print(f"Images: {len(images)}")
+        print(f"Images available: {len(images)}")
     except Exception as e:
         print(f"Image error: {e}")
         return
@@ -1496,8 +1456,7 @@ def generate_final_csv():
 
     try:
         with open(sched_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            schedule = data.get("next_schedule", [])[:cardamount]
+            schedule = json.load(f).get("next_schedule", [])[:cardamount]
         if not schedule:
             print("No schedule!")
             return
@@ -1509,29 +1468,27 @@ def generate_final_csv():
     # ------------------------------------------------------------------ #
     # 6. Final count
     # ------------------------------------------------------------------ #
-    final_count = min(cardamount, len(images), len(schedule), len(captions))
+    final_count = min(cardamount, len(images), len(schedule))
     if final_count == 0:
         print("Nothing to generate.")
         return
 
-    print(f"\nBuilding {final_count} JARVEE-READY posts...\n")
+    print(f"\nBuilding {final_count} JARVEE-READY posts with random caption reuse...\n")
 
     # ------------------------------------------------------------------ #
-    # 7. Build rows – CORRECT DATE FORMAT: YYYY-MM-DD HH:MM
+    # 7. Build all rows with random captions
     # ------------------------------------------------------------------ #
     rows = []
-    caption_idx = 0
+    random.seed()
 
     for i in range(final_count):
-        caption = captions[caption_idx % len(captions)]
-        caption_idx += 1
+        caption = random.choice(captions)
         img_url = images[i]
         slot = schedule[i]
 
-        # CONVERT: 15/11/2025 00:29 → 2025-11-15 00:29
         date_parts = slot['date'].split('/')
-        yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1]}-{date_parts[0]}"
-        post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"  # NO :00 seconds!
+        yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
+        post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
 
         rows.append({
             "Text": caption,
@@ -1541,35 +1498,55 @@ def generate_final_csv():
         })
 
         card = img_url.split('/')[-1].split('?')[0]
-        print(f"{i+1:2}. {post_time} → {card}")
+        print(f"{i+1:3}. {post_time} → {card}")
 
     # ------------------------------------------------------------------ #
-    # 8. WRITE PERFECT JARVEE CSV
+    # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES (100 per file)
     # ------------------------------------------------------------------ #
     try:
-        with open(csv_path, 'w', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=["Text", "Image URL", "Tags", "Posting Time"],
-                quoting=csv.QUOTE_ALL
-            )
-            writer.writeheader()
-            writer.writerows(rows)
+        # Delete all existing CSVs with the same base name
+        for file in os.listdir(csv_dir):
+            if file.startswith(base_csv_name) and file.endswith('.csv'):
+                os.remove(os.path.join(csv_dir, file))
+        print(f"\nOld CSVs deleted in {csv_dir}")
+
+        CHUNK_SIZE = 100
+        total_files = (len(rows) + CHUNK_SIZE - 1) // CHUNK_SIZE  # Ceiling division
+
+        for idx in range(total_files):
+            chunk = rows[idx * CHUNK_SIZE : (idx + 1) * CHUNK_SIZE]
+            
+            # File naming: first file = author_posts.csv, rest = author_posts_a.csv, _b.csv, etc.
+            if idx == 0 and len(rows) <= CHUNK_SIZE:
+                csv_filename = f"{base_csv_name}.csv"
+            else:
+                suffix = '' if idx == 0 else '_' + string.ascii_lowercase[idx - 1]
+                csv_filename = f"{base_csv_name}{suffix}.csv"
+            
+            csv_fullpath = os.path.join(csv_dir, csv_filename)
+
+            with open(csv_fullpath, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["Text", "Image URL", "Tags", "Posting Time"],
+                    quoting=csv.QUOTE_ALL,
+                    lineterminator='\n'
+                )
+                writer.writeheader()
+                writer.writerows(chunk)
+
+            print(f"Saved: {csv_filename} ({len(chunk)} posts)")
 
         print("\n" + "═" * 100)
-        print(f"JARVEE-READY CSV GENERATED!")
-        print(f"   → {csv_path}")
-        print(f"   {len(rows)} posts | EXACT FORMAT AS YOUR WORKING EXAMPLE")
-        print("═" * 100)
-        print(f"First post:")
-        print(f"   \"{rows[0]['Text']}\"")
-        print(f"   Time: {rows[0]['Posting Time']}")
-        print(f"   Card: {rows[0]['Image URL'].split('/')[-1]}")
+        print("ALL JARVEE-READY CSVs GENERATED SUCCESSFULLY! (100 posts max per file)")
+        print(f"   → {csv_dir}")
+        print(f"   Total: {len(rows)} posts → split into {total_files} file(s)")
+        print("   Old files cleared | Random captions | Smart quotes fixed | 100% safe")
         print("═" * 100)
 
     except Exception as e:
         print(f"Save failed: {e}")
-
+        
 
 def uploadedjpgs():
     """Archive VALID URLs from next_jpgcard.json → uploadedjpgs.json
@@ -2100,18 +2077,15 @@ def moveuploadedurls():
 
 def main():
     fetch_urls()
-    corruptedjpgs()
     markjpgs()
-    corruptedjpgs()
-    crop_and_moveto_jpgs()
     update_calendar()
     generate_final_csv()
-    uploadedjpgs()
+    #uploadedjpgs()
     
 
 
 
 if __name__ == "__main__":
-   markjpgs()
+   main()
    
 

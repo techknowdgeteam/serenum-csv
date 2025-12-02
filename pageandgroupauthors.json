@@ -1,10 +1,8 @@
 {
-    "author": "Sunshine",
-    "page": "none",
-    "group": "include",
+    "author": "Brilliance",
     "processjpgfrom": "freshjpgs",
-    "cardamount": "1",
-    "schedule_date": "18/11/2025 12:00",
+    "cardamount": "336",
+    "schedule_date": "30/12/2025 22:00",
     "type": "fullorders",
     "group_types": "others",
     "group_switch": "no"
