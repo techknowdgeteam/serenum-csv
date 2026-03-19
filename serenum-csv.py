@@ -117,7 +117,363 @@ def fetch_urls() -> list[str]:
             driver.quit()
             print("Browser closed.")
 
+def fetch_urls_upd_1() -> list[str]:
+    """
+    Enhanced fetch_urls: Bypasses SSL issues, handles offline caching,
+    and extracts JPG URLs to JSON. Includes detailed debug output.
+    """
+    # ----- CONFIGURATION -----
+    TARGET_URL = "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1"
+    CHROME_BINARY = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
+    WDM_HOME = os.path.join(os.path.expanduser("~"), ".wdm")
+    # -------------------------
 
+    # 1. Cleanup existing Chrome processes
+    print("Cleaning up Chrome processes...")
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] and proc.info['name'].lower() in ['chrome.exe', 'chromedriver.exe']:
+                proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(1)
+
+    # 2. Setup Chrome Options
+    options = Options()
+    options.binary_location = CHROME_BINARY
+    
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    
+    # Disable HTTPS upgrades
+    options.add_argument("--disable-features=HttpsUpgrades")
+    options.add_argument("--disable-features=HttpsOnlyMode")
+    
+    # Ignore certificate errors
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-web-security")
+    
+    # Anti-detection
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    # Realistic user agent
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+    # 3. Driver setup
+    driver_path = None
+    try:
+        print("Attempting to fetch Driver (SSL Bypass Active)...")
+        driver_path = ChromeDriverManager().install()
+    except Exception as e:
+        print(f"Network fetch failed: {e}")
+        print("Searching local .wdm cache for fallback...")
+        
+        found_drivers = []
+        for root, _, files in os.walk(WDM_HOME):
+            for file in files:
+                if file.lower() == "chromedriver.exe":
+                    found_drivers.append(os.path.join(root, file))
+        
+        if found_drivers:
+            driver_path = max(found_drivers, key=os.path.getmtime)
+            print(f"Using cached driver: {driver_path}")
+        else:
+            print("CRITICAL: No driver found online or in cache.")
+            return []
+
+    # 4. Execution
+    driver = None
+    try:
+        service = Service(executable_path=driver_path)
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        # Hide automation
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        driver.set_page_load_timeout(60)
+        
+        print(f"Navigating to: {TARGET_URL}")
+        
+        # Load the page
+        try:
+            driver.get(TARGET_URL)
+        except Exception as e:
+            print(f"Navigation completed with warning: {e}")
+        
+        # Wait for initial load
+        time.sleep(5)
+        
+        current_url = driver.current_url
+        print(f"Current URL: {current_url}")
+        
+        # Wait for page to be ready
+        print("Waiting for page to load...")
+        max_wait = 30
+        for i in range(max_wait):
+            ready_state = driver.execute_script("return document.readyState")
+            if ready_state == "complete":
+                print("Page fully loaded!")
+                break
+            time.sleep(1)
+        
+        page_title = driver.title
+        print(f"Page title: '{page_title}'")
+        
+        # Get total expected URLs from summary cards
+        print("\n=== CHECKING TOTALS ===")
+        summary_js = """
+        let totals = {};
+        document.querySelectorAll('.card').forEach(card => {
+            let title = card.querySelector('h3')?.textContent;
+            let value = card.querySelector('p')?.textContent;
+            if (title && value) {
+                totals[title] = value;
+            }
+        });
+        return totals;
+        """
+        
+        summary_cards = driver.execute_script(summary_js)
+        expected_total = 0
+        if summary_cards:
+            print("Summary cards found:")
+            for title, value in summary_cards.items():
+                print(f"  {title}: {value}")
+                if "Unique URLs Saved" in title:
+                    expected_total = int(value.replace(',', ''))
+        
+        print(f"\nExpected total URLs: {expected_total}")
+        
+        # CRITICAL: Scroll to load all URLs
+        print("\n=== SCROLLING TO LOAD ALL URLS ===")
+        
+        scroll_js = """
+        // Find the scrollable container (the div with All Saved URLs)
+        function findScrollContainer() {
+            // Look for the div that contains the URLs
+            let allSavedSection = Array.from(document.querySelectorAll('h2')).find(h2 => 
+                h2.textContent.includes('All Saved URLs')
+            );
+            
+            if (allSavedSection) {
+                // The next sibling should be the container with scroll
+                let container = allSavedSection.nextElementSibling;
+                if (container && container.style.maxHeight) {
+                    return container;
+                }
+            }
+            
+            // Fallback: look for any div with overflow auto and many children
+            let containers = Array.from(document.querySelectorAll('div[style*="overflow"]'));
+            for (let container of containers) {
+                if (container.children.length > 10) {
+                    return container;
+                }
+            }
+            
+            return document.documentElement; // Fallback to whole page
+        }
+        
+        let container = findScrollContainer();
+        console.log('Scrolling container:', container);
+        
+        let lastHeight = 0;
+        let scrollAttempts = 0;
+        let maxAttempts = 50; // Safety limit
+        
+        function scrollToBottom() {
+            return new Promise((resolve) => {
+                let interval = setInterval(() => {
+                    container.scrollTop = container.scrollHeight;
+                    let newHeight = container.scrollHeight;
+                    
+                    if (newHeight === lastHeight) {
+                        scrollAttempts++;
+                        if (scrollAttempts >= 5) { // No change for 5 attempts
+                            clearInterval(interval);
+                            resolve();
+                        }
+                    } else {
+                        scrollAttempts = 0;
+                        lastHeight = newHeight;
+                    }
+                    
+                    if (scrollAttempts >= maxAttempts) {
+                        clearInterval(interval);
+                        resolve();
+                    }
+                }, 1000);
+            });
+        }
+        
+        return scrollToBottom();
+        """
+        
+        print("Scrolling to load all URLs...")
+        driver.execute_script(scroll_js)
+        time.sleep(5)  # Extra wait after scrolling
+        
+        # Now extract URLs with the improved JavaScript that counts properly
+        print("\n=== EXTRACTING URLS ===")
+        
+        extract_js = """
+        function extractAllURLs() {
+            let urls = new Set();
+            let urlCount = 0;
+            
+            // Find the container with all URLs
+            let allSavedSection = Array.from(document.querySelectorAll('h2')).find(h2 => 
+                h2.textContent.includes('All Saved URLs')
+            );
+            
+            if (allSavedSection) {
+                let container = allSavedSection.nextElementSibling;
+                if (container) {
+                    // Get all div.url elements
+                    let urlDivs = container.querySelectorAll('div.url');
+                    console.log('Found ' + urlDivs.length + ' URL divs in container');
+                    
+                    urlDivs.forEach(div => {
+                        let text = div.textContent.trim();
+                        if (text && (text.includes('.jpg') || text.includes('.jpeg'))) {
+                            urls.add(text);
+                        }
+                    });
+                    
+                    urlCount = urlDivs.length;
+                }
+            }
+            
+            // Fallback: scan entire page
+            if (urls.size === 0) {
+                console.log('Falling back to full page scan');
+                document.querySelectorAll('div.url').forEach(div => {
+                    let text = div.textContent.trim();
+                    if (text && (text.includes('.jpg') || text.includes('.jpeg'))) {
+                        urls.add(text);
+                    }
+                });
+            }
+            
+            return {
+                urls: Array.from(urls),
+                count: urls.size,
+                expected: document.querySelector('.card p:last-child')?.textContent || 'unknown'
+            };
+        }
+        
+        return extractAllURLs();
+        """
+        
+        result = driver.execute_script(extract_js)
+        jpg_urls = result.get('urls', [])
+        found_count = result.get('count', 0)
+        
+        print(f"JavaScript found {found_count} URLs")
+        
+        # If we didn't get all URLs, try a more aggressive approach
+        if found_count < expected_total and expected_total > 0:
+            print(f"\n⚠️ Only found {found_count} of {expected_total} URLs. Trying aggressive extraction...")
+            
+            # Scroll again more aggressively
+            for i in range(3):
+                print(f"  Aggressive scroll attempt {i+1}")
+                driver.execute_script("""
+                    let container = document.querySelector('div[style*="overflow"]') || document.documentElement;
+                    container.scrollTop = container.scrollHeight;
+                """)
+                time.sleep(2)
+            
+            # Try extraction again
+            result = driver.execute_script(extract_js)
+            jpg_urls = result.get('urls', [])
+            found_count = result.get('count', 0)
+            print(f"After aggressive scroll: {found_count} URLs")
+        
+        # Remove duplicates and clean up
+        unique_urls = []
+        seen = set()
+        
+        for url in jpg_urls:
+            url = url.strip()
+            url = re.sub(r'[,\s;:]+$', '', url)
+            
+            if url and url not in seen and ('.jpg' in url.lower() or '.jpeg' in url.lower()):
+                # Make sure URL is absolute
+                if url.startswith('/'):
+                    url = 'http://fhdrikxsirudr.fwh.is' + url
+                elif url.startswith('//'):
+                    url = 'http:' + url
+                
+                seen.add(url)
+                unique_urls.append(url)
+        
+        total = len(unique_urls)
+        print(f"\n✅ Successfully extracted {total} unique JPG URL(s)")
+        if expected_total > 0:
+            percentage = (total / expected_total) * 100
+            print(f"   {percentage:.1f}% of expected total ({expected_total})")
+        
+        # Save everything
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        
+        # Save full page source
+        page_dump = os.path.join(os.path.dirname(OUTPUT_FILE), "page_source_debug.html")
+        with open(page_dump, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        print(f"📄 Full page source saved to: {page_dump}")
+        
+        # Save extracted URLs
+        urls_file = os.path.join(os.path.dirname(OUTPUT_FILE), "extracted_urls.txt")
+        with open(urls_file, "w", encoding="utf-8") as f:
+            for url in unique_urls:
+                f.write(url + "\n")
+        print(f"📄 Extracted URLs saved to: {urls_file}")
+        
+        payload = {
+            "source_url": TARGET_URL,
+            "current_url": current_url,
+            "page_title": page_title,
+            "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z",
+            "total_jpgs": total,
+            "expected_total": expected_total,
+            "jpg_urls": unique_urls,
+            "debug": {
+                "summary_cards": summary_cards,
+                "found_via_js": found_count
+            }
+        }
+        
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        
+        print(f"Results saved to {OUTPUT_FILE}")
+        
+        if unique_urls:
+            print("\nSample URLs (first 10):")
+            for url in unique_urls[:10]:
+                print(f"  {url}")
+        
+        return unique_urls
+
+    except Exception as e:
+        print(f"❌ FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+    finally:
+        if driver:
+            driver.quit()
+            print("Browser session closed.")
+ 
+                                                             
 def corruptedjpgs():
     """
     Scans ALL .jpg, .jpeg, .png, .gif files in:
@@ -603,11 +959,13 @@ def markjpgs():
     # ------------------------------------------------------------------ #
     # 2. Paths
     # ------------------------------------------------------------------ #
-    base_path = (
-        f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
-        if processjpgfrom == 'uploadedjpgs'
-        else f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
-    )
+    # Define both HTTP and HTTPS base paths for flexible matching
+    http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}/"
+    https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
+    
+    if processjpgfrom == 'uploadedjpgs':
+        http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
+        https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
 
     jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
     next_json_dir    = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
@@ -633,15 +991,58 @@ def markjpgs():
         print(f"Failed to read fetched list: {e}")
         return
 
-    # Filter to relevant image URLs only
-    all_image_urls = [
-        u for u in all_fetched_urls
-        if u.startswith(base_path) and u.lower().endswith(('.jpg', '.jpeg', '.png'))
-    ]
-    print(f"Found {len(all_image_urls)} candidate JPG/PNG URLs")
+    # Debug: Show a few sample URLs to see what we're working with
+    print("\nSample fetched URLs (first 5):")
+    for i, url in enumerate(list(all_fetched_urls)[:5]):
+        print(f"  {i+1}: {url}")
 
-    if len(all_image_urls) == 0:
+    # Filter to relevant image URLs only - handle both HTTP and HTTPS
+    all_image_urls = []
+    
+    for url in all_fetched_urls:
+        url_lower = url.lower()
+        
+        # Check if it's a valid image file
+        if not url_lower.endswith(('.jpg', '.jpeg', '.png')):
+            continue
+            
+        # Check if it matches either HTTP or HTTPS base path
+        # Using 'in' to check if the path pattern exists in the URL
+        path_pattern = f"/jpgs/{author}/"
+        if processjpgfrom == 'uploadedjpgs':
+            path_pattern = f"/jpgs/{author}_uploaded/"
+        
+        if path_pattern in url:
+            all_image_urls.append(url)
+            continue
+            
+        # Also check for alternative patterns (sometimes the URL structure might vary)
+        alt_pattern = f"jpgs/{author}/"
+        if processjpgfrom == 'uploadedjpgs':
+            alt_pattern = f"jpgs/{author}_uploaded/"
+            
+        if alt_pattern in url:
+            all_image_urls.append(url)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_image_urls = []
+    for url in all_image_urls:
+        if url not in seen:
+            seen.add(url)
+            unique_image_urls.append(url)
+
+    print(f"\nFound {len(unique_image_urls)} candidate JPG/PNG URLs for author '{author}' in folder '{processjpgfrom}'")
+
+    if len(unique_image_urls) == 0:
         print("No candidate URLs found. Abort.")
+        print("\nDebug Info:")
+        print(f"  Author: {author}")
+        print(f"  Process from: {processjpgfrom}")
+        print(f"  Expected path pattern: /jpgs/{author}/")
+        print("\nAll fetched URLs (first 10):")
+        for i, url in enumerate(list(all_fetched_urls)[:10]):
+            print(f"  {i+1}: {url}")
         return
 
     # ------------------------------------------------------------------ #
@@ -664,14 +1065,30 @@ def markjpgs():
 
             for u in items:
                 if isinstance(u, str):
-                    uploaded_urls.add(u.strip())
+                    # Normalize uploaded URLs to handle both HTTP and HTTPS
+                    url = u.strip()
+                    uploaded_urls.add(url)
+                    # Also add the alternative protocol version
+                    if url.startswith('http://'):
+                        uploaded_urls.add('https://' + url[7:])
+                    elif url.startswith('https://'):
+                        uploaded_urls.add('http://' + url[8:])
             
             print(f"Loaded {len(uploaded_urls)} already-uploaded URLs → will skip them")
         except Exception as e:
             print(f"Warning: Could not read uploadedjpgs.json: {e}")
 
-    original_count = len(all_image_urls)
-    candidate_urls = [u for u in all_image_urls if u not in uploaded_urls]
+    original_count = len(unique_image_urls)
+    candidate_urls = []
+    
+    for url in unique_image_urls:
+        # Check if URL exists in uploaded_urls (considering both protocols)
+        url_http = url.replace('https://', 'http://') if url.startswith('https://') else url
+        url_https = url.replace('http://', 'https://') if url.startswith('http://') else url
+        
+        if url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls:
+            candidate_urls.append(url)
+    
     skipped = original_count - len(candidate_urls)
     print(f"After deduplication: {len(candidate_urls)} new URLs left ({skipped} already uploaded)")
 
@@ -689,8 +1106,16 @@ def markjpgs():
                 data = json.load(f)
                 next_urls = data.get("next_jpgcard", [])
             
-            next_urls = [u for u in next_urls if u not in uploaded_urls]
+            # Filter out uploaded URLs from next_urls
+            filtered_next = []
+            for url in next_urls:
+                url_http = url.replace('https://', 'http://') if url.startswith('https://') else url
+                url_https = url.replace('http://', 'https://') if url.startswith('http://') else url
+                
+                if url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls:
+                    filtered_next.append(url)
             
+            next_urls = filtered_next
             print(f"Loaded {len(next_urls)} URL(s) from next_jpgcard.json (after checking against uploaded list)")
         except Exception as e:
             print(f"Corrupted next_jpgcard.json → {e}. Will rebuild.")
@@ -792,15 +1217,14 @@ def markjpgs():
     """
     # ----- DOWNLOAD SECTION IS DISABLED -----
     print(f"[DRY RUN] Would download {cardamount} new images here (download code is commented out).")
-    # Simulate success for the rest of the script (optional – remove if you want it to stop here)
+    # Simulate success for the rest of the script
     downloaded = cardamount
-    valid_urls = candidate_urls[:cardamount]      # Use first N candidate URLs as placeholders
+    valid_urls = candidate_urls[:cardamount]
     saved_paths = [os.path.join(download_dir, filename_from_url(u)) for u in valid_urls]
 
     # ------------------------------------------------------------------ #
     # 10. COPY TO jpgfolders (preserving original filenames)
     # ------------------------------------------------------------------ #
-    # Note: Since no real download happened, this will just create dummy copies or skip
     for src_path, orig_url in zip(saved_paths, valid_urls):
         dest_name = filename_from_url(orig_url)
         dest_path = os.path.join(jpgfolders_dir, dest_name)
@@ -811,7 +1235,7 @@ def markjpgs():
             dest_path = os.path.join(jpgfolders_dir, f"{root}_{counter}{ext}")
             counter += 1
 
-        # Since no real file exists, we create a tiny placeholder so the rest works
+        # Create placeholder if file doesn't exist
         if not os.path.exists(src_path):
             print(f"  [PLACEHOLDER] Creating dummy file for {dest_name}")
             with open(src_path, 'w') as dummy:
@@ -853,7 +1277,7 @@ def markjpgs():
     print(f"JSON Path          : {next_json_path}")
     print("Ready for testing – real download loop is commented out.")
     print("="*80)
-
+   
 
 
 def update_calendar():
@@ -1033,11 +1457,12 @@ def update_calendar():
     update_timeschedule()
 
 def update_timeschedule():
-    """REBUILD next_schedule starting AFTER schedule_date — every run obeys schedule_date 100%."""
+    """REBUILD next_schedule starting AFTER schedule_date — every run obeys schedule_date 100%.
+    Now generates exactly as many slots as needed (up to cardamount / images available)."""
     import os
     import json
     from datetime import datetime, timedelta
-
+    
     # --------------------------------------------------------------------- #
     # 1. Load config
     # --------------------------------------------------------------------- #
@@ -1048,18 +1473,18 @@ def update_timeschedule():
     except Exception as e:
         print(f"Config error: {e}")
         return
-
-    author            = cfg['author']
-    type_value        = cfg['type']
-    group_types       = cfg['group_types']
-    cardamount        = int(cfg.get('cardamount', 1))
+    
+    author = cfg['author']
+    type_value = cfg['type']
+    group_types = cfg['group_types']
+    cardamount = int(cfg.get('cardamount', 1))
     schedule_date_str = cfg.get('schedule_date', '').strip()
-
+    
     print(f"Config loaded: author={author}, type={type_value}, cardamount={cardamount}")
-    print(f"schedule_date (dictator) = '{schedule_date_str}'")
-
+    print(f"schedule_date (starting point) = '{schedule_date_str}'")
+    
     # --------------------------------------------------------------------- #
-    # 2. Parse schedule_date → this is the ONLY start point
+    # 2. Parse schedule_date → strict starting point
     # --------------------------------------------------------------------- #
     start_dt = None
     if schedule_date_str:
@@ -1072,18 +1497,17 @@ def update_timeschedule():
                 break
             except ValueError:
                 continue
-
+    
     if start_dt is None:
         start_dt = datetime.now()
-        print("Invalid schedule_date → fallback to now")
-
+        print("Invalid or missing schedule_date → fallback to now")
+    
     print(f"Starting schedule generation strictly AFTER: {start_dt.strftime('%d/%m/%Y %H:%M')}")
-
     NOW = datetime.now()
     print(f"Current time: {NOW.strftime('%d/%m/%Y %H:%M')}")
-
+    
     # --------------------------------------------------------------------- #
-    # 3. Load timeorders
+    # 3. Load timeorders (your posting times per day)
     # --------------------------------------------------------------------- #
     timeorders_path = r"C:\xampp\htdocs\serenum-csv\timeorders.json"
     try:
@@ -1092,22 +1516,22 @@ def update_timeschedule():
     except Exception as e:
         print(f"Timeorders error: {e}")
         return
-
+    
     if type_value not in timeorders_data:
         print(f"Type '{type_value}' not found in timeorders.json")
         return
-
+    
     timeorders = sorted(timeorders_data[type_value], key=lambda x: x["24hours"])
-    time_map = {t["24hours"]: t["12hours"] for t in timeorders}
-
+    print(f"Loaded {len(timeorders)} posting times per day for '{type_value}'")
+    
     # --------------------------------------------------------------------- #
     # 4. Paths
     # --------------------------------------------------------------------- #
     base_dir = f"C:\\xampp\\htdocs\\serenum-csv\\files\\next jpg\\{author}\\jsons\\{group_types}"
     schedules_path = os.path.join(base_dir, f"{type_value}schedules.json")
-
+    
     # --------------------------------------------------------------------- #
-    # 5. Load existing last_schedule only (we will KEEP it)
+    # 5. Load existing last_schedule (preserve published ones)
     # --------------------------------------------------------------------- #
     last_schedule = []
     if os.path.exists(schedules_path):
@@ -1115,47 +1539,55 @@ def update_timeschedule():
             with open(schedules_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 last_schedule = data.get("last_schedule", [])
-            print(f"Preserved {len(last_schedule)} published slots")
+            print(f"Preserved {len(last_schedule)} already-published slots")
         except Exception as e:
-            print(f"Error reading existing file: {e}")
-
+            print(f"Error reading existing schedules.json: {e}")
+    
     # --------------------------------------------------------------------- #
-    # 6. Generate BRAND NEW next_schedule starting AFTER start_dt
+    # 6. Target: schedule exactly as many as cardamount (or less if fewer images)
+    #    In real usage you would pass/read the actual available images count here
+    # --------------------------------------------------------------------- #
+    # For now using cardamount — replace 500 with your real "Images available" value if known
+    available_images = 10000000000   # ← CHANGE THIS or make it dynamic from earlier part of script
+    target_slots = min(cardamount, available_images)
+    print(f"Target: schedule exactly {target_slots} slots (min of cardamount and available images)")
+    
+    # --------------------------------------------------------------------- #
+    # 7. Generate new next_schedule — keep going until we have enough
     # --------------------------------------------------------------------- #
     new_next_schedule = []
     current_day = start_dt.date()
-    current_time = start_dt.time()
     days_searched = 0
-    max_days = 120
-
-    while len(new_next_schedule) < cardamount and days_searched < max_days:
+    SAFETY_MAX_DAYS = 100000  # very high ceiling — should never hit with reasonable numbers
+    
+    while len(new_next_schedule) < target_slots and days_searched < SAFETY_MAX_DAYS:
         day_str = current_day.strftime("%d/%m/%Y")
-
+        
         for t in timeorders:
-            if len(new_next_schedule) >= cardamount:
+            if len(new_next_schedule) >= target_slots:
                 break
-
+                
             slot_time_24 = t["24hours"]
             try:
                 slot_dt = datetime.combine(current_day, datetime.strptime(slot_time_24, "%H:%M").time())
             except:
                 continue
-
-            # First slot on first day must be AFTER start_dt
+            
+            # Keep original validation rules
             if current_day == start_dt.date():
                 if slot_dt <= start_dt:
                     continue
-                # Apply 50-minute buffer only if today is current day
+                # 50-minute buffer only applies if this is TODAY
                 if current_day == NOW.date():
                     if (slot_dt - NOW).total_seconds() / 60 < 50:
                         continue
             else:
-                # Future days: allow even 00:05
+                # Future days: skip only if somehow before now (shouldn't happen)
                 if slot_dt <= NOW:
                     continue
-
+            
+            # Valid slot → add it
             slot_id = f"{current_day.day:02d}_{slot_time_24.replace(':', '')}"
-
             new_slot = {
                 "id": slot_id,
                 "date": day_str,
@@ -1163,42 +1595,52 @@ def update_timeschedule():
                 "time_24hour": slot_time_24
             }
             new_next_schedule.append(new_slot)
-            print(f"Scheduled: {day_str} {slot_time_24}")
-
+            print(f"  Added slot {len(new_next_schedule):3d}/{target_slots}: {day_str} {slot_time_24}")
+        
         current_day += timedelta(days=1)
         days_searched += 1
-
+    
+    if days_searched >= SAFETY_MAX_DAYS:
+        print(f"WARNING: Safety limit reached after {SAFETY_MAX_DAYS} days — only {len(new_next_schedule)} slots created")
+    
     if not new_next_schedule:
-        print("No slots could be scheduled after schedule_date!")
+        print("No valid slots could be scheduled after the start date!")
         return
-
+    
+    print(f"Generated {len(new_next_schedule)} new future slots")
+    
     # --------------------------------------------------------------------- #
-    # 7. Save: keep old last_schedule + brand new next_schedule
+    # 8. Save: keep old last_schedule + brand new next_schedule
     # --------------------------------------------------------------------- #
     output = {
         "last_schedule": last_schedule,
         "next_schedule": new_next_schedule
     }
+    
     os.makedirs(os.path.dirname(schedules_path), exist_ok=True)
     with open(schedules_path, 'w', encoding='utf-8') as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
-    print(f"Saved {len(new_next_schedule)} new slots → {schedules_path}")
-
+    
+    print(f"Saved to: {schedules_path}")
+    print(f" → last_schedule: {len(last_schedule)} items")
+    print(f" → next_schedule: {len(new_next_schedule)} items (target was {target_slots})")
+    
     # --------------------------------------------------------------------- #
-    # 8. Update schedule_date → last slot in new queue
+    # 9. Update schedule_date to the LAST slot in the new queue
     # --------------------------------------------------------------------- #
-    last_slot = new_next_schedule[-1]
-    new_schedule_date = f"{last_slot['date']} {last_slot['time_24hour']}"
-    new_dt = datetime.strptime(new_schedule_date, "%d/%m/%Y %H:%M")
-
-    cfg["schedule_date"] = new_dt.strftime("%d/%m/%Y %H:%M")
-    with open(pageauthors_path, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, indent=4, ensure_ascii=False)
-
-    print(f"schedule_date updated to → {cfg['schedule_date']}")
-    print(f"Expected final date: 11/12/2025 06:00 (or very close)")
-
-    print("SUCCESS: Full rebuild complete. schedule_date is now absolute ruler.")     
+    if new_next_schedule:
+        last_slot = new_next_schedule[-1]
+        new_schedule_date = f"{last_slot['date']} {last_slot['time_24hour']}"
+        try:
+            new_dt = datetime.strptime(new_schedule_date, "%d/%m/%Y %H:%M")
+            cfg["schedule_date"] = new_dt.strftime("%d/%m/%Y %H:%M")
+            with open(pageauthors_path, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, indent=4, ensure_ascii=False)
+            print(f"schedule_date updated to last slot: {cfg['schedule_date']}")
+        except Exception as e:
+            print(f"Could not update schedule_date: {e}")
+    
+    print("update_timeschedule() completed successfully.")   
     
 def randomize_next_schedule_minutes():
     """
@@ -2078,10 +2520,10 @@ def moveuploadedurls():
 def main():
     fetch_urls()
     markjpgs()
-    update_calendar()
-    generate_final_csv()
+    #update_calendar()
+    #generate_final_csv()
     #uploadedjpgs()
-    
+   
 
 
 
@@ -2089,3 +2531,5 @@ if __name__ == "__main__":
    main()
    
 
+
+   
