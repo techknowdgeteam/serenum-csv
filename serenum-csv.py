@@ -30,7 +30,7 @@ import json
 import csv
 import random
 import string
-
+import psutil
 
 
 
@@ -39,85 +39,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+
+
+# Force bypass of SSL verification for ChromeDriverManager
+os.environ['WDM_SSL_VERIFY'] = '0'
+from datetime import datetime, timezone
 def fetch_urls() -> list[str]:
-    """
-    Launch headless Chrome, fetch JPG URLs, save to JSON,
-    and PRINT status messages (hardcoded inside).
-    """
-    # ----- ALL HARDCODED PATHS & URL -----
-    TARGET_URL = "https://fhdrikxsirudr.fwh.is//loadimagesurl.php"
-    CHROME_BINARY = r"C:\xampp\htdocs\CIPHER\googlechrome\Google\Chrome\Application\chrome.exe"
-    OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
-    # -------------------------------------
-
-    print("Starting headless Chrome...")
-    print(f"Target URL: {TARGET_URL}")
-    print(f"Output file: {OUTPUT_FILE}")
-
-    options = Options()
-    options.add_argument("--disable-notifications")
-    options.add_argument("--disable-autofill")
-    options.add_argument("--log-level=3")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--headless=new")
-    options.add_argument("--window-size=1920,1080")
-
-    if os.path.exists(CHROME_BINARY):
-        options.binary_location = CHROME_BINARY
-        print("Using custom Chrome binary.")
-    else:
-        print("Custom Chrome binary not found. Using system default.")
-
-    driver = None
-    try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager(driver_version="139.0.7258.128").install()),
-            options=options
-        )
-        driver.set_page_load_timeout(60)
-        print("Navigating to page...")
-        driver.get(TARGET_URL)
-        driver.implicitly_wait(5)
-
-        print("Extracting JPG URLs from <div class=\"url\">...")
-        html = driver.page_source
-        matches = re.findall(r'<div class="url">([^<]+)</div>', html)
-
-        jpg_urls = []
-        for url in matches:
-            url = url.strip().replace("\\", "/")
-            if url.lower().endswith(('.jpg', '.jpeg')) and url not in jpg_urls:
-                jpg_urls.append(url)
-
-        total = len(jpg_urls)
-        print(f"Extracted {total} unique JPG URL(s).")
-
-        # Save JSON
-        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-        payload = {
-            "source_url": TARGET_URL,
-            "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-            "total_jpgs": total,
-            "jpg_urls": jpg_urls
-        }
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-        return jpg_urls
-
-    except Exception as e:
-        print("FAILED: An error occurred.")
-        print(f"Error: {e}")
-        return []
-    finally:
-        if driver:
-            driver.quit()
-            print("Browser closed.")
-
-def fetch_urls_upd_1() -> list[str]:
     """
     Enhanced fetch_urls: Bypasses SSL issues, handles offline caching,
     and extracts JPG URLs to JSON. Includes detailed debug output.
@@ -472,8 +399,7 @@ def fetch_urls_upd_1() -> list[str]:
         if driver:
             driver.quit()
             print("Browser session closed.")
- 
-                                                             
+                                                              
 def corruptedjpgs():
     """
     Scans ALL .jpg, .jpeg, .png, .gif files in:
@@ -1277,7 +1203,7 @@ def markjpgs():
     print(f"JSON Path          : {next_json_path}")
     print("Ready for testing – real download loop is commented out.")
     print("="*80)
-   
+    
 
 
 def update_calendar():
@@ -1637,6 +1563,7 @@ def update_timeschedule():
             with open(pageauthors_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
             print(f"schedule_date updated to last slot: {cfg['schedule_date']}")
+            randomize_next_schedule_minutes()
         except Exception as e:
             print(f"Could not update schedule_date: {e}")
     
@@ -2520,8 +2447,8 @@ def moveuploadedurls():
 def main():
     fetch_urls()
     markjpgs()
-    #update_calendar()
-    #generate_final_csv()
+    update_calendar()
+    generate_final_csv()
     #uploadedjpgs()
    
 
@@ -2531,5 +2458,3 @@ if __name__ == "__main__":
    main()
    
 
-
-   
