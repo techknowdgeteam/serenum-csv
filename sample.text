@@ -30,17 +30,7 @@ import json
 import csv
 import random
 import string
-import psutil
-from datetime import datetime, timezone
-import connectwithinfinitydb as db
-import json
-import os
-from datetime import datetime
-import time
-from selenium.webdriver.common.by import By
-import re
-from datetime import datetime, timezone
-from webdriver_manager.chrome import ChromeDriverManager
+
 
 
 
@@ -49,238 +39,441 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-
-
-# Force bypass of SSL verification for ChromeDriverManager
-os.environ['WDM_SSL_VERIFY'] = '0'
-   
-def fetch_jpgsvault_urls():
+def fetch_urls() -> list[str]:
     """
-    Modified function to fetch all_urls data from jpgsvault_table
-    Properly handles JSON array format from the database
+    Launch headless Chrome, fetch JPG URLs, save to JSON,
+    and PRINT status messages (hardcoded inside).
     """
-    import json as json_module  # Rename to avoid conflict with your json variable
-    
-    # Inner function for manual parsing
-    def manual_parse_urls(urls_field):
-        """
-        Fallback parser for when JSON parsing fails
-        Handles various formats like comma-separated, newline-separated, etc.
-        """
-        urls_list = []
-        
-        # Try comma separation first
-        if ',' in urls_field:
-            # Split by comma but be careful with escaped commas
-            parts = urls_field.split(',')
-            for part in parts:
-                part = part.strip()
-                # Remove brackets and quotes
-                part = re.sub(r'^[\[\]"\']+|[\[\]"\']+$', '', part)
-                if part:
-                    urls_list.append(part)
-        elif '\n' in urls_field:
-            # Split by newline
-            for line in urls_field.split('\n'):
-                line = line.strip()
-                if line:
-                    urls_list.append(line)
-        else:
-            # Single URL
-            urls_list.append(urls_field.strip())
-        
-        return urls_list
-    
+    # ----- ALL HARDCODED PATHS & URL -----
+    TARGET_URL = "https://fhdrikxsirudr.fwh.is//loadimagesurl.php"
+    CHROME_BINARY = r"C:\xampp\htdocs\CIPHER\googlechrome\Google\Chrome\Application\chrome.exe"
+    OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
+    # -------------------------------------
+
+    print("Starting headless Chrome...")
+    print(f"Target URL: {TARGET_URL}")
+    print(f"Output file: {OUTPUT_FILE}")
+
+    options = Options()
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-autofill")
+    options.add_argument("--log-level=3")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--headless=new")
+    options.add_argument("--window-size=1920,1080")
+
+    if os.path.exists(CHROME_BINARY):
+        options.binary_location = CHROME_BINARY
+        print("Using custom Chrome binary.")
+    else:
+        print("Custom Chrome binary not found. Using system default.")
+
+    driver = None
     try:
-        print(f"[ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ] Starting fetch from jpgsvault_table...")
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager(driver_version="139.0.7258.128").install()),
+            options=options
+        )
+        driver.set_page_load_timeout(60)
+        print("Navigating to page...")
+        driver.get(TARGET_URL)
+        driver.implicitly_wait(5)
+
+        print("Extracting JPG URLs from <div class=\"url\">...")
+        html = driver.page_source
+        matches = re.findall(r'<div class="url">([^<]+)</div>', html)
+
+        jpg_urls = []
+        for url in matches:
+            url = url.strip().replace("\\", "/")
+            if url.lower().endswith(('.jpg', '.jpeg')) and url not in jpg_urls:
+                jpg_urls.append(url)
+
+        total = len(jpg_urls)
+        print(f"Extracted {total} unique JPG URL(s).")
+
+        # Save JSON
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        payload = {
+            "source_url": TARGET_URL,
+            "fetched_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "total_jpgs": total,
+            "jpg_urls": jpg_urls
+        }
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+        return jpg_urls
+
+    except Exception as e:
+        print("FAILED: An error occurred.")
+        print(f"Error: {e}")
+        return []
+    finally:
+        if driver:
+            driver.quit()
+            print("Browser closed.")
+
+def fetch_urls_upd_1() -> list[str]:
+    """
+    Enhanced fetch_urls: Bypasses SSL issues, handles offline caching,
+    and extracts JPG URLs to JSON. Includes detailed debug output.
+    """
+    # ----- CONFIGURATION -----
+    TARGET_URL = "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1"
+    CHROME_BINARY = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
+    WDM_HOME = os.path.join(os.path.expanduser("~"), ".wdm")
+    # -------------------------
+
+    # 1. Cleanup existing Chrome processes
+    print("Cleaning up Chrome processes...")
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] and proc.info['name'].lower() in ['chrome.exe', 'chromedriver.exe']:
+                proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    time.sleep(1)
+
+    # 2. Setup Chrome Options
+    options = Options()
+    options.binary_location = CHROME_BINARY
+    
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    
+    # Disable HTTPS upgrades
+    options.add_argument("--disable-features=HttpsUpgrades")
+    options.add_argument("--disable-features=HttpsOnlyMode")
+    
+    # Ignore certificate errors
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-web-security")
+    
+    # Anti-detection
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    # Realistic user agent
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+    # 3. Driver setup
+    driver_path = None
+    try:
+        print("Attempting to fetch Driver (SSL Bypass Active)...")
+        driver_path = ChromeDriverManager().install()
+    except Exception as e:
+        print(f"Network fetch failed: {e}")
+        print("Searching local .wdm cache for fallback...")
         
-        # Query to get all_urls column from jpgsvault_table
-        query = "SELECT all_urls FROM jpgsvault_table" 
-        result = db.execute_query(query)  # Using the global execute_query function
+        found_drivers = []
+        for root, _, files in os.walk(WDM_HOME):
+            for file in files:
+                if file.lower() == "chromedriver.exe":
+                    found_drivers.append(os.path.join(root, file))
         
-        if result.get('status') != 'success':
-            print(f"QUERY ERROR: {result.get('message')}")
+        if found_drivers:
+            driver_path = max(found_drivers, key=os.path.getmtime)
+            print(f"Using cached driver: {driver_path}")
+        else:
+            print("CRITICAL: No driver found online or in cache.")
             return []
+
+    # 4. Execution
+    driver = None
+    try:
+        service = Service(executable_path=driver_path)
+        driver = webdriver.Chrome(service=service, options=options)
+        
+        # Hide automation
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        driver.set_page_load_timeout(60)
+        
+        print(f"Navigating to: {TARGET_URL}")
+        
+        # Load the page
+        try:
+            driver.get(TARGET_URL)
+        except Exception as e:
+            print(f"Navigation completed with warning: {e}")
+        
+        # Wait for initial load
+        time.sleep(5)
+        
+        current_url = driver.current_url
+        print(f"Current URL: {current_url}")
+        
+        # Wait for page to be ready
+        print("Waiting for page to load...")
+        max_wait = 30
+        for i in range(max_wait):
+            ready_state = driver.execute_script("return document.readyState")
+            if ready_state == "complete":
+                print("Page fully loaded!")
+                break
+            time.sleep(1)
+        
+        page_title = driver.title
+        print(f"Page title: '{page_title}'")
+        
+        # Get total expected URLs from summary cards
+        print("\n=== CHECKING TOTALS ===")
+        summary_js = """
+        let totals = {};
+        document.querySelectorAll('.card').forEach(card => {
+            let title = card.querySelector('h3')?.textContent;
+            let value = card.querySelector('p')?.textContent;
+            if (title && value) {
+                totals[title] = value;
+            }
+        });
+        return totals;
+        """
+        
+        summary_cards = driver.execute_script(summary_js)
+        expected_total = 0
+        if summary_cards:
+            print("Summary cards found:")
+            for title, value in summary_cards.items():
+                print(f"  {title}: {value}")
+                if "Unique URLs Saved" in title:
+                    expected_total = int(value.replace(',', ''))
+        
+        print(f"\nExpected total URLs: {expected_total}")
+        
+        # CRITICAL: Scroll to load all URLs
+        print("\n=== SCROLLING TO LOAD ALL URLS ===")
+        
+        scroll_js = """
+        // Find the scrollable container (the div with All Saved URLs)
+        function findScrollContainer() {
+            // Look for the div that contains the URLs
+            let allSavedSection = Array.from(document.querySelectorAll('h2')).find(h2 => 
+                h2.textContent.includes('All Saved URLs')
+            );
             
-        rows = result.get('results', [])
-        
-        if not rows:
-            print("WARNING: Database returned 'success' but the results list is empty.")
-            print("Check if the table 'jpgsvault_table' actually has rows in the PHP interface.")
-            return []
-        
-        print(f"SUCCESS: Fetched {len(rows)} records from 'jpgsvault_table'")
-        
-        # Extract all URLs from the rows
-        all_urls = []
-        seen_urls = set()
-        skipped_count = 0
-        metadata_count = 0
-        urls_list = []  # Initialize for statistics
-        
-        for row in rows:
-            # Get the all_urls field from each row
-            urls_field = row.get('all_urls', '')
+            if (allSavedSection) {
+                // The next sibling should be the container with scroll
+                let container = allSavedSection.nextElementSibling;
+                if (container && container.style.maxHeight) {
+                    return container;
+                }
+            }
             
-            if urls_field:
-                # Try to parse as JSON array first
-                urls_list = []
+            // Fallback: look for any div with overflow auto and many children
+            let containers = Array.from(document.querySelectorAll('div[style*="overflow"]'));
+            for (let container of containers) {
+                if (container.children.length > 10) {
+                    return container;
+                }
+            }
+            
+            return document.documentElement; // Fallback to whole page
+        }
+        
+        let container = findScrollContainer();
+        console.log('Scrolling container:', container);
+        
+        let lastHeight = 0;
+        let scrollAttempts = 0;
+        let maxAttempts = 50; // Safety limit
+        
+        function scrollToBottom() {
+            return new Promise((resolve) => {
+                let interval = setInterval(() => {
+                    container.scrollTop = container.scrollHeight;
+                    let newHeight = container.scrollHeight;
+                    
+                    if (newHeight === lastHeight) {
+                        scrollAttempts++;
+                        if (scrollAttempts >= 5) { // No change for 5 attempts
+                            clearInterval(interval);
+                            resolve();
+                        }
+                    } else {
+                        scrollAttempts = 0;
+                        lastHeight = newHeight;
+                    }
+                    
+                    if (scrollAttempts >= maxAttempts) {
+                        clearInterval(interval);
+                        resolve();
+                    }
+                }, 1000);
+            });
+        }
+        
+        return scrollToBottom();
+        """
+        
+        print("Scrolling to load all URLs...")
+        driver.execute_script(scroll_js)
+        time.sleep(5)  # Extra wait after scrolling
+        
+        # Now extract URLs with the improved JavaScript that counts properly
+        print("\n=== EXTRACTING URLS ===")
+        
+        extract_js = """
+        function extractAllURLs() {
+            let urls = new Set();
+            let urlCount = 0;
+            
+            // Find the container with all URLs
+            let allSavedSection = Array.from(document.querySelectorAll('h2')).find(h2 => 
+                h2.textContent.includes('All Saved URLs')
+            );
+            
+            if (allSavedSection) {
+                let container = allSavedSection.nextElementSibling;
+                if (container) {
+                    // Get all div.url elements
+                    let urlDivs = container.querySelectorAll('div.url');
+                    console.log('Found ' + urlDivs.length + ' URL divs in container');
+                    
+                    urlDivs.forEach(div => {
+                        let text = div.textContent.trim();
+                        if (text && (text.includes('.jpg') || text.includes('.jpeg'))) {
+                            urls.add(text);
+                        }
+                    });
+                    
+                    urlCount = urlDivs.length;
+                }
+            }
+            
+            // Fallback: scan entire page
+            if (urls.size === 0) {
+                console.log('Falling back to full page scan');
+                document.querySelectorAll('div.url').forEach(div => {
+                    let text = div.textContent.trim();
+                    if (text && (text.includes('.jpg') || text.includes('.jpeg'))) {
+                        urls.add(text);
+                    }
+                });
+            }
+            
+            return {
+                urls: Array.from(urls),
+                count: urls.size,
+                expected: document.querySelector('.card p:last-child')?.textContent || 'unknown'
+            };
+        }
+        
+        return extractAllURLs();
+        """
+        
+        result = driver.execute_script(extract_js)
+        jpg_urls = result.get('urls', [])
+        found_count = result.get('count', 0)
+        
+        print(f"JavaScript found {found_count} URLs")
+        
+        # If we didn't get all URLs, try a more aggressive approach
+        if found_count < expected_total and expected_total > 0:
+            print(f"\n⚠️ Only found {found_count} of {expected_total} URLs. Trying aggressive extraction...")
+            
+            # Scroll again more aggressively
+            for i in range(3):
+                print(f"  Aggressive scroll attempt {i+1}")
+                driver.execute_script("""
+                    let container = document.querySelector('div[style*="overflow"]') || document.documentElement;
+                    container.scrollTop = container.scrollHeight;
+                """)
+                time.sleep(2)
+            
+            # Try extraction again
+            result = driver.execute_script(extract_js)
+            jpg_urls = result.get('urls', [])
+            found_count = result.get('count', 0)
+            print(f"After aggressive scroll: {found_count} URLs")
+        
+        # Remove duplicates and clean up
+        unique_urls = []
+        seen = set()
+        
+        for url in jpg_urls:
+            url = url.strip()
+            url = re.sub(r'[,\s;:]+$', '', url)
+            
+            if url and url not in seen and ('.jpg' in url.lower() or '.jpeg' in url.lower()):
+                # Make sure URL is absolute
+                if url.startswith('/'):
+                    url = 'http://fhdrikxsirudr.fwh.is' + url
+                elif url.startswith('//'):
+                    url = 'http:' + url
                 
-                # Check if it looks like a JSON array
-                if urls_field.strip().startswith('[') and urls_field.strip().endswith(']'):
-                    try:
-                        # Parse as JSON array
-                        urls_list = json_module.loads(urls_field)
-                        print(f"Successfully parsed JSON array with {len(urls_list)} items")
-                    except json_module.JSONDecodeError as e:
-                        print(f"JSON parse error: {e}, falling back to manual parsing")
-                        # Fallback to manual parsing if JSON fails
-                        urls_list = manual_parse_urls(urls_field)
-                else:
-                    # Try other formats
-                    urls_list = manual_parse_urls(urls_field)
-                
-                # Process each URL in the list
-                for url in urls_list:
-                    # Skip metadata entries like "total_urls: 9684"
-                    if isinstance(url, str):
-                        url_lower = url.lower().strip()
-                        if url_lower.startswith('total_urls:') or url_lower.startswith('total_urls='):
-                            print(f"Skipping metadata entry: {url}")
-                            metadata_count += 1
-                            continue
-                    
-                    url = str(url).strip()
-                    
-                    # Skip empty strings
-                    if not url:
-                        skipped_count += 1
-                        continue
-                    
-                    # Remove quotes if present (from manual parsing)
-                    url = url.strip('"').strip("'")
-                    
-                    # Fix escaped slashes
-                    url = url.replace('\\/', '/')
-                    
-                    # Remove any leading/trailing brackets or weird characters
-                    url = re.sub(r'^[\["\']+|[\]"\']+$', '', url)
-                    
-                    # Handle the URL construction
-                    original_url = url  # Keep for debugging
-                    
-                    if 'jpgs' in url.lower():
-                        # Find where jpgs starts
-                        jpgs_index = url.lower().find('jpgs')
-                        if jpgs_index != -1:
-                            path_part = url[jpgs_index:]
-                            # Clean up the path
-                            path_part = path_part.replace('\\', '/')
-                            # Replace multiple slashes with single slash
-                            path_part = re.sub(r'/+', '/', path_part)
-                            # Remove any quotes or brackets from path
-                            path_part = re.sub(r'["\'\[\]]', '', path_part)
-                            # Construct clean URL
-                            url = f'http://fhdrikxsirudr.fwh.is/{path_part}'
-                        else:
-                            # If no jpgs found, treat as relative path
-                            url = url.replace('\\', '/')
-                            url = re.sub(r'/+', '/', url)
-                            url = re.sub(r'["\'\[\]]', '', url)
-                            url = f'http://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
-                    elif url.startswith('/'):
-                        url = f'http://fhdrikxsirudr.fwh.is{url}'
-                        url = re.sub(r'/+', '/', url)
-                    elif url.startswith('//'):
-                        url = f'http:{url}'
-                        url = re.sub(r'/+', '/', url)
-                    elif not url.startswith('http'):
-                        # Assume it's a relative path
-                        url = url.replace('\\', '/')
-                        url = re.sub(r'/+', '/', url)
-                        url = re.sub(r'["\'\[\]]', '', url)
-                        url = f'http://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
-                    else:
-                        # Already has http, just clean it
-                        url = re.sub(r'["\'\[\]]', '', url)
-                        url = re.sub(r'/+', '/', url)
-                    
-                    # Accept ALL URLs regardless of extension
-                    if url and url not in seen_urls:
-                        # Accept the URL regardless of extension
-                        seen_urls.add(url)
-                        all_urls.append(url)
-                    elif url in seen_urls:
-                        skipped_count += 1
-                    else:
-                        skipped_count += 1
-                        print(f"DEBUG: Skipped invalid URL: {original_url} -> {url}")
+                seen.add(url)
+                unique_urls.append(url)
         
-        total = len(all_urls)
-        expected_total = 9684  # From your metadata
+        total = len(unique_urls)
+        print(f"\n✅ Successfully extracted {total} unique JPG URL(s)")
+        if expected_total > 0:
+            percentage = (total / expected_total) * 100
+            print(f"   {percentage:.1f}% of expected total ({expected_total})")
         
-        print(f"\n📊 STATISTICS:")
-        print(f"   - Total items in JSON array: {len(urls_list)}")
-        print(f"   - Metadata entries skipped: {metadata_count}")
-        print(f"   - URLs extracted: {total}")
-        print(f"   - Expected URLs: {expected_total}")
-        print(f"   - Skipped/duplicates: {skipped_count}")
+        # Save everything
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
         
-        if total != expected_total:
-            print(f"\n⚠️ WARNING: Extracted {total} URLs but expected {expected_total}")
-            print(f"   Difference: {expected_total - total} URLs missing")
-            
-            # Debug: Check what's in the first few URLs to see the pattern
-            print("\n🔍 First 5 raw URLs from JSON:")
-            for i, item in enumerate(urls_list[:5]):
-                if isinstance(item, str) and not item.startswith('total_urls'):
-                    print(f"   {i+1}. {item}")
+        # Save full page source
+        page_dump = os.path.join(os.path.dirname(OUTPUT_FILE), "page_source_debug.html")
+        with open(page_dump, "w", encoding="utf-8") as f:
+            f.write(driver.page_source)
+        print(f"📄 Full page source saved to: {page_dump}")
         
-        print(f"\n✅ Final: {total} unique JPG URL(s) extracted from all_urls column")
+        # Save extracted URLs
+        urls_file = os.path.join(os.path.dirname(OUTPUT_FILE), "extracted_urls.txt")
+        with open(urls_file, "w", encoding="utf-8") as f:
+            for url in unique_urls:
+                f.write(url + "\n")
+        print(f"📄 Extracted URLs saved to: {urls_file}")
         
-        # Create output in EXACT same format as fetch_urls
-        output_data = {
-            "source_url": "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1",
-            "current_url": "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1",
-            "page_title": "JPGs Vault Database Export",
+        payload = {
+            "source_url": TARGET_URL,
+            "current_url": current_url,
+            "page_title": page_title,
             "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z",
             "total_jpgs": total,
             "expected_total": expected_total,
-            "jpg_urls": all_urls,
+            "jpg_urls": unique_urls,
             "debug": {
-                "summary_cards": {"Unique URLs Saved": str(total)},
-                "found_via_js": total,
-                "source": "jpgsvault_table.all_urls",
-                "records_processed": len(rows),
-                "json_array_size": len(urls_list),
-                "metadata_skipped": metadata_count
+                "summary_cards": summary_cards,
+                "found_via_js": found_count
             }
         }
         
-        # Save to the same output file as fetch_urls uses
-        OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
         
-        # Save to file
-        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=2)
+        print(f"Results saved to {OUTPUT_FILE}")
         
-        print(f"\n💾 Data saved to {OUTPUT_FILE}")
-        
-        if all_urls:
-            print(f"\n📋 Sample URLs (first 10):")
-            for url in all_urls[:10]:
+        if unique_urls:
+            print("\nSample URLs (first 10):")
+            for url in unique_urls[:10]:
                 print(f"  {url}")
         
-        return all_urls
-        
+        return unique_urls
+
     except Exception as e:
-        print(f"CRITICAL ERROR in fetch process: {e}")
+        print(f"❌ FAILED: {e}")
         import traceback
         traceback.print_exc()
-        return []  
-
-                                                                                           
+        return []
+    finally:
+        if driver:
+            driver.quit()
+            print("Browser session closed.")
+ 
+                                                             
 def corruptedjpgs():
     """
     Scans ALL .jpg, .jpeg, .png, .gif files in:
@@ -645,7 +838,7 @@ def check_single_url(
     timeout: int = 30,
     temp_dir: str | None = None,
     final_dir: str | None = None,
-) -> Tuple[bool, str, str]: 
+) -> Tuple[bool, str, str]:
     """
     Downloads a single image, verifies it with Pillow and returns:
         (is_valid: bool, debug_info: str, saved_path: str)
@@ -732,7 +925,7 @@ def check_single_url(
 
     return True, f"OK → {os.path.getsize(final_path)} bytes", final_path
 
-def markjpgs_old():
+def markjpgs():
 
     # ------------------------------------------------------------------ #
     # 1. Load config
@@ -885,64 +1078,51 @@ def markjpgs_old():
         except Exception as e:
             print(f"Warning: Could not read uploadedjpgs.json: {e}")
 
-    # ------------------------------------------------------------------ #
-    # 5. Load existing next_jpgcard.json (if any)
-    # ------------------------------------------------------------------ #
-    next_urls_set = set()  # Changed to set for faster lookup
-    if os.path.exists(next_json_path):
-        try:
-            with open(next_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                existing_next_urls = data.get("next_jpgcard", [])
-            
-            # Normalize URLs for comparison (handle both protocols)
-            for url in existing_next_urls:
-                next_urls_set.add(url)
-                # Also add the alternative protocol version
-                if url.startswith('http://'):
-                    next_urls_set.add('https://' + url[7:])
-                elif url.startswith('https://'):
-                    next_urls_set.add('http://' + url[8:])
-            
-            print(f"Loaded {len(existing_next_urls)} URL(s) from next_jpgcard.json")
-        except Exception as e:
-            print(f"Corrupted next_jpgcard.json → {e}. Will rebuild.")
-            next_urls_set = set()
-
-    # ------------------------------------------------------------------ #
-    # 6. SKIP URLs that are in uploaded OR next_jpgcard
-    # ------------------------------------------------------------------ #
     original_count = len(unique_image_urls)
     candidate_urls = []
     
     for url in unique_image_urls:
-        # Check if URL exists in uploaded_urls or next_urls_set
+        # Check if URL exists in uploaded_urls (considering both protocols)
         url_http = url.replace('https://', 'http://') if url.startswith('https://') else url
         url_https = url.replace('http://', 'https://') if url.startswith('http://') else url
         
-        # Skip if in either uploaded or next_jpgcard
-        if (url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls and
-            url not in next_urls_set and url_http not in next_urls_set and url_https not in next_urls_set):
+        if url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls:
             candidate_urls.append(url)
     
-    skipped_uploaded = sum(1 for url in unique_image_urls if url in uploaded_urls or 
-                           (url.replace('https://', 'http://') if url.startswith('https://') else url) in uploaded_urls or
-                           (url.replace('http://', 'https://') if url.startswith('http://') else url) in uploaded_urls)
-    
-    skipped_next = sum(1 for url in unique_image_urls if url in next_urls_set or 
-                      (url.replace('https://', 'http://') if url.startswith('https://') else url) in next_urls_set or
-                      (url.replace('http://', 'https://') if url.startswith('http://') else url) in next_urls_set)
-    
-    print(f"\nAfter deduplication: {len(candidate_urls)} new URLs left")
-    print(f"  - Skipped (uploaded): {skipped_uploaded}")
-    print(f"  - Skipped (in next_jpgcard): {skipped_next}")
+    skipped = original_count - len(candidate_urls)
+    print(f"After deduplication: {len(candidate_urls)} new URLs left ({skipped} already uploaded)")
 
     if len(candidate_urls) < cardamount:
         print(f"Only {len(candidate_urls)} NEW URLs available, need {cardamount}. Abort.")
         return
 
     # ------------------------------------------------------------------ #
-    # 7. Count files in jpgfolders
+    # 5. Load existing next_jpgcard.json (if any)
+    # ------------------------------------------------------------------ #
+    next_urls = []
+    if os.path.exists(next_json_path):
+        try:
+            with open(next_json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                next_urls = data.get("next_jpgcard", [])
+            
+            # Filter out uploaded URLs from next_urls
+            filtered_next = []
+            for url in next_urls:
+                url_http = url.replace('https://', 'http://') if url.startswith('https://') else url
+                url_https = url.replace('http://', 'https://') if url.startswith('http://') else url
+                
+                if url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls:
+                    filtered_next.append(url)
+            
+            next_urls = filtered_next
+            print(f"Loaded {len(next_urls)} URL(s) from next_jpgcard.json (after checking against uploaded list)")
+        except Exception as e:
+            print(f"Corrupted next_jpgcard.json → {e}. Will rebuild.")
+            next_urls = []
+
+    # ------------------------------------------------------------------ #
+    # 6. Count files in jpgfolders
     # ------------------------------------------------------------------ #
     image_exts = ('.jpg', '.jpeg', '.png')
     existing_files = [
@@ -953,36 +1133,26 @@ def markjpgs_old():
     print(f"Found {file_count} image(s) in jpgfolders")
 
     # ------------------------------------------------------------------ #
-    # 8. VALIDATION - Check if existing next_jpgcard.json matches files
+    # 7. VALIDATION
     # ------------------------------------------------------------------ #
     def filename_from_url(url: str) -> str:
         return os.path.basename(url.split("?")[0])
 
-    # Get current next_urls (original, not normalized)
-    current_next_urls = []
-    if os.path.exists(next_json_path):
-        try:
-            with open(next_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                current_next_urls = data.get("next_jpgcard", [])
-        except Exception:
-            current_next_urls = []
-
-    url_filenames    = {filename_from_url(u) for u in current_next_urls}
+    url_filenames    = {filename_from_url(u) for u in next_urls}
     file_names       = set(existing_files)
 
     files_match_urls = file_names == url_filenames
-    url_count_ok     = len(current_next_urls) == cardamount
+    url_count_ok     = len(next_urls) == cardamount
     file_count_ok    = file_count == cardamount
 
     print("\nVALIDATION CHECK:")
     print(f"  • Required count         : {cardamount}")
     print(f"  • Files in folder        : {file_count}")
-    print(f"  • URLs in JSON           : {len(current_next_urls)}")
+    print(f"  • URLs in JSON           : {len(next_urls)}")
     print(f"  • 1:1 filename match     : {'YES' if files_match_urls else 'NO'}")
 
     # ------------------------------------------------------------------ #
-    # 9. DECISION – perfect sync or wipe & rebuild
+    # 8. DECISION – perfect sync or wipe & rebuild
     # ------------------------------------------------------------------ #
     if file_count_ok and url_count_ok and files_match_urls:
         print("\nPERFECT MATCH – skipping download.")
@@ -990,7 +1160,7 @@ def markjpgs_old():
     else:
         reasons = []
         if not file_count_ok:    reasons.append(f"File count ({file_count} ≠ {cardamount})")
-        if not url_count_ok:     reasons.append(f"URL count ({len(current_next_urls)} ≠ {cardamount})")
+        if not url_count_ok:     reasons.append(f"URL count ({len(next_urls)} ≠ {cardamount})")
         if not files_match_urls: reasons.append("Filename mismatch")
         print("\nMISMATCH DETECTED:")
         for r in reasons: print(f"  → {r}")
@@ -1015,7 +1185,7 @@ def markjpgs_old():
         print(f"\nREDOWNLOADING EXACTLY {cardamount} **NEW** VALID IMAGES...\n")
 
     # ------------------------------------------------------------------ #
-    # 10. DOWNLOAD LOOP – COMMENTED OUT (DRY RUN / SAFE MODE)
+    # 9. DOWNLOAD LOOP – COMMENTED OUT (DRY RUN / SAFE MODE)
     # ------------------------------------------------------------------ #
     """
     downloaded = 0
@@ -1053,7 +1223,7 @@ def markjpgs_old():
     saved_paths = [os.path.join(download_dir, filename_from_url(u)) for u in valid_urls]
 
     # ------------------------------------------------------------------ #
-    # 11. COPY TO jpgfolders (preserving original filenames)
+    # 10. COPY TO jpgfolders (preserving original filenames)
     # ------------------------------------------------------------------ #
     for src_path, orig_url in zip(saved_paths, valid_urls):
         dest_name = filename_from_url(orig_url)
@@ -1077,7 +1247,7 @@ def markjpgs_old():
             print(f"  [COPY FAILED] {dest_name} → {e}")
 
     # ------------------------------------------------------------------ #
-    # 12. WRITE next_jpgcard.json – only the original URLs
+    # 11. WRITE next_jpgcard.json – only the original URLs
     # ------------------------------------------------------------------ #
     try:
         with open(next_json_path, 'w', encoding='utf-8') as f:
@@ -1093,498 +1263,21 @@ def markjpgs_old():
         return
 
     # ------------------------------------------------------------------ #
-    # 13. FINAL REPORT
+    # 12. FINAL REPORT
     # ------------------------------------------------------------------ #
     print("\n" + "="*80)
     print("DRY RUN COMPLETE – NO REAL DOWNLOADS PERFORMED")
     print("="*80)
     print(f"Author             : {author}")
     print(f"Required           : {cardamount}")
-    print(f"Skipped (uploaded) : {skipped_uploaded}")
-    print(f"Skipped (next)     : {skipped_next}")
+    print(f"Skipped            : {skipped} (already uploaded)")
     print(f"Simulated Download : {downloaded} (no actual files downloaded)")
     print(f"jpgfolders         : {jpgfolders_dir}")
     print(f"Download Dir       : {download_dir}")
     print(f"JSON Path          : {next_json_path}")
     print("Ready for testing – real download loop is commented out.")
     print("="*80)
-
-def markjpgs():
-
-    # ------------------------------------------------------------------ #
-    # 1. Load config
-    # ------------------------------------------------------------------ #
-    JSON_CONFIG_PATH = r'C:\xampp\htdocs\serenum-csv\pageandgroupauthors.json'
-    FETCHED_JSON_PATH = r'C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json'
-
-    try:
-        with open(JSON_CONFIG_PATH, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-
-        author = config.get('author', '').strip()
-        author_lower = author.lower()  # Store lowercase version for comparisons
-        processjpgfrom = config.get('processjpgfrom', 'freshjpgs').strip().lower()
-        if not author:
-            print("Error: 'author' missing in config.")
-            return
-
-        try:
-            cardamount = max(1, int(config.get('cardamount', 1)))
-        except Exception:
-            print("Warning: Invalid cardamount. Using 1.")
-            cardamount = 1
-
-        if processjpgfrom not in ['freshjpgs', 'uploadedjpgs']:
-            processjpgfrom = 'freshjpgs'
-
-    except Exception as e:
-        print(f"Config load failed: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 2. Paths
-    # ------------------------------------------------------------------ #
-    # Define both HTTP and HTTPS base paths for flexible matching
-    http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}/"
-    https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
-    
-    if processjpgfrom == 'uploadedjpgs':
-        http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
-        https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
-
-    jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
-    next_json_dir    = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}'
-    next_json_path  = os.path.join(next_json_dir, 'next_jpgcard.json')
-    download_dir    = fr'C:\xampp\htdocs\serenum-csv\files\downloaded\{author}'
-    uploaded_json_path = fr'C:\xampp\htdocs\serenum-csv\files\uploaded jpgs\{author}\uploadedjpgs.json'
-
-    for d in [jpgfolders_dir, next_json_dir, download_dir]:
-        os.makedirs(d, exist_ok=True)
-
-    # ------------------------------------------------------------------ #
-    # 3. Load fetched URLs (CASE-INSENSITIVE FILTERING)
-    # ------------------------------------------------------------------ #
-    if not os.path.exists(FETCHED_JSON_PATH):
-        print(f"fetchedjpgsurl.json not found: {FETCHED_JSON_PATH}")
-        return
-
-    try:
-        with open(FETCHED_JSON_PATH, 'r', encoding='utf-8') as f:
-            all_fetched_urls = set(json.load(f).get("jpg_urls", []))
-        print(f"Loaded {len(all_fetched_urls)} URLs from fetched list")
-    except Exception as e:
-        print(f"Failed to read fetched list: {e}")
-        return
-
-    # Debug: Show a few sample URLs to see what we're working with
-    print("\nSample fetched URLs (first 5):")
-    for i, url in enumerate(list(all_fetched_urls)[:5]):
-        print(f"  {i+1}: {url}")
-
-    # Filter to relevant image URLs only - FULL CASE-INSENSITIVE matching
-    all_image_urls = []
-    
-    for url in all_fetched_urls:
-        url_lower = url.lower()
-        
-        # Check if it's a valid image file
-        if not url_lower.endswith(('.jpg', '.jpeg', '.png')):
-            continue
-            
-        # CASE-INSENSITIVE path pattern matching using lowercase author
-        path_pattern = f"/jpgs/{author_lower}/"
-        if processjpgfrom == 'uploadedjpgs':
-            path_pattern = f"/jpgs/{author_lower}_uploaded/"
-        
-        # Check if lowercase URL contains lowercase path pattern
-        if path_pattern in url_lower:
-            all_image_urls.append(url)
-            continue
-            
-        # Also check for alternative patterns (case-insensitive)
-        alt_pattern = f"jpgs/{author_lower}/"
-        if processjpgfrom == 'uploadedjpgs':
-            alt_pattern = f"jpgs/{author_lower}_uploaded/"
-            
-        if alt_pattern in url_lower:
-            all_image_urls.append(url)
-            continue
-        
-        # Final fallback: check if author name appears anywhere in URL (case-insensitive)
-        if author_lower in url_lower and 'jpgs' in url_lower:
-            all_image_urls.append(url)
-
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_image_urls = []
-    for url in all_image_urls:
-        if url not in seen:
-            seen.add(url)
-            unique_image_urls.append(url)
-
-    print(f"\nFound {len(unique_image_urls)} candidate JPG/PNG URLs for author '{author}' in folder '{processjpgfrom}'")
-
-    if len(unique_image_urls) == 0:
-        print("No candidate URLs found. Abort.")
-        print("\nDebug Info:")
-        print(f"  Author: {author}")
-        print(f"  Author (lowercase for matching): {author_lower}")
-        print(f"  Process from: {processjpgfrom}")
-        print(f"  Expected path pattern (case-insensitive): /jpgs/{author_lower}/")
-        print("\nAll fetched URLs (first 10):")
-        for i, url in enumerate(list(all_fetched_urls)[:10]):
-            print(f"  {i+1}: {url}")
-            print(f"      Lowercase: {url.lower()}")
-            print(f"      Contains pattern: {path_pattern in url.lower() if 'path_pattern' in locals() else 'N/A'}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 4. Load uploadedjpgs.json → SKIP ALREADY ARCHIVED URLs (CASE-INSENSITIVE)
-    # ------------------------------------------------------------------ #
-    uploaded_urls_norm = set()  # Store normalized (lowercase) versions
-    uploaded_urls_original = set()  # Store original versions
-    
-    if os.path.exists(uploaded_json_path):
-        try:
-            with open(uploaded_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            raw = data.get("uploaded_jpgs", [])
-            
-            if isinstance(raw, str):
-                items = raw.strip().split(',')
-            elif isinstance(raw, list):
-                items = raw
-            else:
-                items = []
-
-            for u in items:
-                if isinstance(u, str):
-                    url = u.strip()
-                    uploaded_urls_original.add(url)
-                    uploaded_urls_norm.add(url.lower())
-                    # Also add the alternative protocol version (normalized)
-                    if url.startswith('http://'):
-                        uploaded_urls_norm.add(('https://' + url[7:]).lower())
-                    elif url.startswith('https://'):
-                        uploaded_urls_norm.add(('http://' + url[8:]).lower())
-            
-            print(f"Loaded {len(uploaded_urls_original)} already-uploaded URLs → will skip them (case-insensitive)")
-        except Exception as e:
-            print(f"Warning: Could not read uploadedjpgs.json: {e}")
-
-    # ------------------------------------------------------------------ #
-    # 5. Load existing next_jpgcard.json (CASE-INSENSITIVE)
-    # ------------------------------------------------------------------ #
-    next_urls_norm = set()  # Store normalized (lowercase) versions
-    next_urls_original = set()  # Store original versions
-    
-    if os.path.exists(next_json_path):
-        try:
-            with open(next_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                existing_next_urls = data.get("next_jpgcard", [])
-            
-            # Normalize URLs for comparison (handle both protocols and case)
-            for url in existing_next_urls:
-                next_urls_original.add(url)
-                next_urls_norm.add(url.lower())
-                # Also add the alternative protocol version (normalized)
-                if url.startswith('http://'):
-                    next_urls_norm.add(('https://' + url[7:]).lower())
-                elif url.startswith('https://'):
-                    next_urls_norm.add(('http://' + url[8:]).lower())
-            
-            print(f"Loaded {len(existing_next_urls)} URL(s) from next_jpgcard.json")
-        except Exception as e:
-            print(f"Corrupted next_jpgcard.json → {e}. Will rebuild.")
-            next_urls_norm = set()
-            next_urls_original = set()
-
-    # ------------------------------------------------------------------ #
-    # 6. SKIP URLs that are in uploaded OR next_jpgcard (CASE-INSENSITIVE)
-    # ------------------------------------------------------------------ #
-    original_count = len(unique_image_urls)
-    candidate_urls = []
-    
-    for url in unique_image_urls:
-        url_lower = url.lower()
-        
-        # Normalize HTTP/HTTPS for comparison
-        url_http_lower = url_lower.replace('https://', 'http://')
-        url_https_lower = url_lower.replace('http://', 'https://')
-        
-        # Check against normalized (lowercase) sets
-        if (url_lower not in uploaded_urls_norm and 
-            url_http_lower not in uploaded_urls_norm and 
-            url_https_lower not in uploaded_urls_norm and
-            url_lower not in next_urls_norm and 
-            url_http_lower not in next_urls_norm and 
-            url_https_lower not in next_urls_norm):
-            candidate_urls.append(url)
-    
-    # Calculate skipped counts for reporting
-    skipped_uploaded = 0
-    skipped_next = 0
-    
-    for url in unique_image_urls:
-        url_lower = url.lower()
-        url_http_lower = url_lower.replace('https://', 'http://')
-        url_https_lower = url_lower.replace('http://', 'https://')
-        
-        if (url_lower in uploaded_urls_norm or 
-            url_http_lower in uploaded_urls_norm or 
-            url_https_lower in uploaded_urls_norm):
-            skipped_uploaded += 1
-        
-        if (url_lower in next_urls_norm or 
-            url_http_lower in next_urls_norm or 
-            url_https_lower in next_urls_norm):
-            skipped_next += 1
-    
-    print(f"\nAfter deduplication: {len(candidate_urls)} new URLs left")
-    print(f"  - Skipped (uploaded): {skipped_uploaded}")
-    print(f"  - Skipped (in next_jpgcard): {skipped_next}")
-
-    if len(candidate_urls) < cardamount:
-        print(f"Only {len(candidate_urls)} NEW URLs available, need {cardamount}. Abort.")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 7. Count files in jpgfolders
-    # ------------------------------------------------------------------ #
-    image_exts = ('.jpg', '.jpeg', '.png')
-    existing_files = [
-        f for f in os.listdir(jpgfolders_dir)
-        if f.lower().endswith(image_exts)
-    ]
-    file_count = len(existing_files)
-    print(f"Found {file_count} image(s) in jpgfolders")
-
-    # ------------------------------------------------------------------ #
-    # 8. VALIDATION - Check if existing next_jpgcard.json matches files (CASE-INSENSITIVE)
-    # ------------------------------------------------------------------ #
-    def filename_from_url(url: str) -> str:
-        return os.path.basename(url.split("?")[0])
-
-    # Get current next_urls (original, not normalized)
-    current_next_urls = []
-    if os.path.exists(next_json_path):
-        try:
-            with open(next_json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                current_next_urls = data.get("next_jpgcard", [])
-        except Exception:
-            current_next_urls = []
-
-    # CASE-INSENSITIVE filename matching
-    url_filenames_lower = {filename_from_url(u).lower() for u in current_next_urls}
-    file_names_lower = {f.lower() for f in existing_files}
-
-    files_match_urls = file_names_lower == url_filenames_lower
-    url_count_ok     = len(current_next_urls) == cardamount
-    file_count_ok    = file_count == cardamount
-
-    print("\nVALIDATION CHECK:")
-    print(f"  • Required count         : {cardamount}")
-    print(f"  • Files in folder        : {file_count}")
-    print(f"  • URLs in JSON           : {len(current_next_urls)}")
-    print(f"  • 1:1 filename match (case-insensitive): {'YES' if files_match_urls else 'NO'}")
-
-    # ------------------------------------------------------------------ #
-    # 9. DECISION – perfect sync or wipe & rebuild
-    # ------------------------------------------------------------------ #
-    if file_count_ok and url_count_ok and files_match_urls:
-        print("\nPERFECT MATCH – skipping download.")
-        return
-    else:
-        reasons = []
-        if not file_count_ok:    reasons.append(f"File count ({file_count} ≠ {cardamount})")
-        if not url_count_ok:     reasons.append(f"URL count ({len(current_next_urls)} ≠ {cardamount})")
-        if not files_match_urls: reasons.append("Filename mismatch (case-insensitive check failed)")
-        print("\nMISMATCH DETECTED:")
-        for r in reasons: print(f"  → {r}")
-
-        # ---- wipe everything ------------------------------------------------
-        print("Wiping jpgfolders and reset next_jpgcard.json...")
-        for f in existing_files:
-            try:
-                os.remove(os.path.join(jpgfolders_dir, f))
-            except Exception: pass
-
-        for f in os.listdir(download_dir):
-            p = os.path.join(download_dir, f)
-            if os.path.isfile(p):
-                try: os.remove(p)
-                except Exception: pass
-
-        with open(next_json_path, 'w', encoding='utf-8') as f:
-            json.dump({"next_jpgcard": []}, f, indent=4, ensure_ascii=False)
-        print("  [RESET] next_jpgcard.json")
-        
-        print(f"\nREDOWNLOADING EXACTLY {cardamount} **NEW** VALID IMAGES...\n")
-
-    # ------------------------------------------------------------------ #
-    # 10. DOWNLOAD LOOP – COMMENTED OUT (DRY RUN / SAFE MODE)
-    # ------------------------------------------------------------------ #
-    """
-    downloaded = 0
-    valid_urls = []
-    saved_paths = []
-
-    for url in candidate_urls:
-        if downloaded >= cardamount:
-            break
-
-        print(f"[{downloaded + 1}/{cardamount}] Downloading: {url}")
-        ok, debug, saved_path = check_single_url(
-            url,
-            temp_dir=download_dir,
-            final_dir=download_dir
-        )
-
-        if ok:
-            valid_urls.append(url)
-            saved_paths.append(saved_path)
-            downloaded += 1
-            print(f"  [SUCCESS] {debug}")
-        else:
-            print(f"  [FAILED] {debug}")
-
-    if downloaded != cardamount:
-        print(f"\nFAILED: Only {downloaded}/{cardamount} NEW images succeeded.")
-        return
-    """
-    # ----- DOWNLOAD SECTION IS DISABLED -----
-    print(f"[DRY RUN] Would download {cardamount} new images here (download code is commented out).")
-    # Simulate success for the rest of the script
-    downloaded = cardamount
-    valid_urls = candidate_urls[:cardamount]
-    saved_paths = [os.path.join(download_dir, filename_from_url(u)) for u in valid_urls]
-
-    # ------------------------------------------------------------------ #
-    # 11. COPY TO jpgfolders (preserving original filenames)
-    # ------------------------------------------------------------------ #
-    for src_path, orig_url in zip(saved_paths, valid_urls):
-        dest_name = filename_from_url(orig_url)
-        dest_path = os.path.join(jpgfolders_dir, dest_name)
-
-        root, ext = os.path.splitext(dest_name)
-        counter = 1
-        while os.path.exists(dest_path):
-            dest_path = os.path.join(jpgfolders_dir, f"{root}_{counter}{ext}")
-            counter += 1
-
-        # Create placeholder if file doesn't exist
-        if not os.path.exists(src_path):
-            print(f"  [PLACEHOLDER] Creating dummy file for {dest_name}")
-            with open(src_path, 'w') as dummy:
-                dummy.write("placeholder")
-        
-        try:
-            shutil.copy2(src_path, dest_path)
-        except Exception as e:
-            print(f"  [COPY FAILED] {dest_name} → {e}")
-
-    # ------------------------------------------------------------------ #
-    # 12. UNCONDITIONALLY CLEANUP AND WRITE next_jpgcard.json
-    # ------------------------------------------------------------------ #
-    # FIRST: Unconditionally clear/cleanup the next_jpgcard.json before writing
-    print("\n[UNCONDITIONAL CLEANUP] Clearing next_jpgcard.json before writing new data...")
-    
-    # Backup existing data if needed (optional - but we're clearing unconditionally)
-    if os.path.exists(next_json_path):
-        try:
-            with open(next_json_path, 'r', encoding='utf-8') as f:
-                old_data = json.load(f)
-                old_count = len(old_data.get("next_jpgcard", []))
-                if old_count > 0:
-                    print(f"  - Removing old data with {old_count} URL(s)")
-        except Exception:
-            pass
-    
-    # Unconditionally reset/clear the JSON file
-    with open(next_json_path, 'w', encoding='utf-8') as f:
-        json.dump({"next_jpgcard": []}, f, indent=4, ensure_ascii=False)
-    print("  - Cleared next_jpgcard.json to empty array []")
-    
-    # NOW write the new valid URLs
-    try:
-        with open(next_json_path, 'w', encoding='utf-8') as f:
-            json.dump(
-                {"next_jpgcard": valid_urls},
-                f,
-                indent=4,
-                ensure_ascii=False
-            )
-        print(f"\nSUCCESS: Saved {len(valid_urls)} new URLs to next_jpgcard.json (existing data was unconditionally cleared first)")
-    except Exception as e:
-        print(f"Failed to save JSON: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 13. FINAL REPORT
-    # ------------------------------------------------------------------ #
-    print("\n" + "="*80)
-    print("DRY RUN COMPLETE – NO REAL DOWNLOADS PERFORMED")
-    print("="*80)
-    print(f"Author             : {author}")
-    print(f"Required           : {cardamount}")
-    print(f"Skipped (uploaded) : {skipped_uploaded}")
-    print(f"Skipped (next)     : {skipped_next}")
-    print(f"Simulated Download : {downloaded} (no actual files downloaded)")
-    print(f"jpgfolders         : {jpgfolders_dir}")
-    print(f"Download Dir       : {download_dir}")
-    print(f"JSON Path          : {next_json_path}")
-    print("Ready for testing – real download loop is commented out.")
-    print("="*80)
-    
-def cleanup_wrong_author_urls():
-    """Remove URLs from next_jpgcard.json that don't belong to the current author"""
-    import os
-    import json
-    
-    JSON_CONFIG_PATH = r'C:\xampp\htdocs\serenum-csv\pageandgroupauthors.json'
-    
-    try:
-        with open(JSON_CONFIG_PATH, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        author = config.get('author', '').strip()
-        author_lower = author.lower()
-        
-        # Path to next_jpgcard.json
-        next_json_path = fr'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}\next_jpgcard.json'
-        
-        if not os.path.exists(next_json_path):
-            print(f"No next_jpgcard.json found for {author}")
-            return
-        
-        with open(next_json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            urls = data.get("next_jpgcard", [])
-        
-        original_count = len(urls)
-        
-        # Filter URLs
-        filtered_urls = []
-        for url in urls:
-            url_lower = url.lower()
-            expected_path = f"/jpgs/{author_lower}/"
-            if expected_path in url_lower:
-                filtered_urls.append(url)
-            else:
-                print(f"Removing wrong author URL: {url}")
-        
-        if len(filtered_urls) != original_count:
-            with open(next_json_path, 'w', encoding='utf-8') as f:
-                json.dump({"next_jpgcard": filtered_urls}, f, indent=4, ensure_ascii=False)
-            print(f"Cleaned next_jpgcard.json: removed {original_count - len(filtered_urls)} wrong URLs")
-        else:
-            print("All URLs belong to correct author")
-            
-    except Exception as e:
-        print(f"Cleanup error: {e}")
+   
 
 
 def update_calendar():
@@ -1665,6 +1358,7 @@ def update_calendar():
                 "consideration": f"passed {t['12hours']}" if minutes_distance >= 50 else f"skip {t['12hours']}"
             }
             time_ahead_today.append(slot)
+            print(f"Slot TODAY: {t['12hours']} ({t['24hours']}): id={slot['id']}, minutes_distance={minutes_distance}, consideration={slot['consideration']}")
     
     # Generate 12 months starting from current month
     calendars = []
@@ -1901,7 +1595,7 @@ def update_timeschedule():
                 "time_24hour": slot_time_24
             }
             new_next_schedule.append(new_slot)
-            #print(f"  Added slot {len(new_next_schedule):3d}/{target_slots}: {day_str} {slot_time_24}")
+            print(f"  Added slot {len(new_next_schedule):3d}/{target_slots}: {day_str} {slot_time_24}")
         
         current_day += timedelta(days=1)
         days_searched += 1
@@ -1943,7 +1637,6 @@ def update_timeschedule():
             with open(pageauthors_path, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
             print(f"schedule_date updated to last slot: {cfg['schedule_date']}")
-            randomize_next_schedule_minutes()
         except Exception as e:
             print(f"Could not update schedule_date: {e}")
     
@@ -2029,8 +1722,7 @@ def randomize_next_schedule_minutes():
             json.dump(data, f, indent=4)
         print(f"[randomize] Successfully randomized {len(updated_slots)} slots (minutes 01–30):")
         for s in sorted(updated_slots):
-            #print(f"  → {s}")
-            print
+            print(f"  → {s}")
     except Exception as e:
         print(f"[randomize] Failed to save file: {e}")
 
@@ -2248,7 +1940,7 @@ def generate_final_csv():
         })
 
         card = img_url.split('/')[-1].split('?')[0]
-        #print(f"{i+1:3}. {post_time} → {card}")
+        print(f"{i+1:3}. {post_time} → {card}")
 
     # ------------------------------------------------------------------ #
     # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES (100 per file)
@@ -2826,11 +2518,10 @@ def moveuploadedurls():
 
 
 def main():
-    fetch_jpgsvault_urls()
+    fetch_urls()
     markjpgs()
-    cleanup_wrong_author_urls()
-    update_calendar()
-    generate_final_csv()
+    #update_calendar()
+    #generate_final_csv()
     #uploadedjpgs()
    
 
@@ -2840,3 +2531,5 @@ if __name__ == "__main__":
    main()
    
 
+
+   
