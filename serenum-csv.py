@@ -58,8 +58,10 @@ def fetch_jpgsvault_urls():
     """
     Modified function to fetch all_urls data from jpgsvault_table
     Properly handles JSON array format from the database
+    Clears existing data before saving new URLs
     """
     import json as json_module  # Rename to avoid conflict with your json variable
+    import os
     
     # Inner function for manual parsing
     def manual_parse_urls(urls_field):
@@ -260,12 +262,23 @@ def fetch_jpgsvault_urls():
         # Save to the same output file as fetch_urls uses
         OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
         
-        # Save to file
+        # --- NEW: Clear existing data before saving ---
+        # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+        
+        # Check if file exists and delete it
+        if os.path.exists(OUTPUT_FILE):
+            try:
+                os.remove(OUTPUT_FILE)
+                print(f"🗑️ Removed existing file: {OUTPUT_FILE}")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not delete existing file: {e}")
+        
+        # Save new data
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
         
-        print(f"\n💾 Data saved to {OUTPUT_FILE}")
+        print(f"\n💾 New data saved to {OUTPUT_FILE}")
         
         if all_urls:
             print(f"\n📋 Sample URLs (first 10):")
@@ -278,9 +291,8 @@ def fetch_jpgsvault_urls():
         print(f"CRITICAL ERROR in fetch process: {e}")
         import traceback
         traceback.print_exc()
-        return []  
+        return []                                                                              
 
-                                                                                           
 def corruptedjpgs():
     """
     Scans ALL .jpg, .jpeg, .png, .gif files in:
@@ -2105,7 +2117,7 @@ def check_schedule_time():
         print(f"Next schedule is valid: {next_schedule_date} {next_schedule_time} is not behind {current_date} {current_time_24hour}")
 
 
-def generate_final_csv():
+def generate_final_csv_old():
     """FINAL JARVEE-COMPATIBLE CSV – UNLIMITED POSTS WITH RANDOM CAPTION REUSE + 100 PER FILE SPLIT"""
     
     # ------------------------------------------------------------------ #
@@ -2296,7 +2308,378 @@ def generate_final_csv():
 
     except Exception as e:
         print(f"Save failed: {e}")
+
+def generate_final_csv():
+    """FINAL JARVEE-COMPATIBLE CSV – UNLIMITED POSTS WITH RANDOM CAPTION REUSE + 100 PER FILE SPLIT"""
+    
+    # ------------------------------------------------------------------ #
+    # 1. Load config
+    # ------------------------------------------------------------------ #
+    CONFIG_PATH = r'C:\xampp\htdocs\serenum-csv\pageandgroupauthors.json'
+    
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            config = json.load(f)
         
+        author = config.get('author', '').strip()
+        group_types = config.get('group_types', '').strip()
+        cardamount = int(config.get('cardamount', 1))
+        type_value = config.get('type', 'fullorders')
+        captions_state = config.get('captions_state', 'mixed').lower().strip()
+        
+        if not author or not group_types:
+            print("Error: Missing author or group_types")
+            return
+        
+        print(f"Generating JARVEE-READY CSV → {author} ({group_types}) | Up to {cardamount} posts")
+        print(f"Captions State: {captions_state.upper()}")
+        
+    except Exception as e:
+        print(f"Config error: {e}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # 2. Paths
+    # ------------------------------------------------------------------ #
+    captions_path = rf'C:\xampp\htdocs\serenum-csv\files\captions\{author}({group_types}).json'
+    jpg_path = rf'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}\next_jpgcard.json'
+    sched_dir = rf'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}\jsons\{group_types}'
+    sched_path = os.path.join(sched_dir, f"{type_value}schedules.json")
+    
+    csv_dir = rf'C:\xampp\htdocs\serenum-csv\files\csv\{author}\{group_types}'
+    os.makedirs(csv_dir, exist_ok=True)
+
+    base_csv_name = f"{author}_posts"
+    print(f"Saving to → {csv_dir}")
+
+    # ------------------------------------------------------------------ #
+    # 3. Load & clean captions (bulletproof)
+    # ------------------------------------------------------------------ #
+    if not os.path.exists(captions_path):
+        print(f"Captions missing: {captions_path}")
+        return
+
+    try:
+        with open(captions_path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        
+        # Store captions with their IDs for tracking
+        captions_with_ids = []
+        captions_only = []
+        
+        for item in raw:
+            if isinstance(item, dict) and 'description' in item:
+                desc = str(item['description']).strip()
+                if not desc:
+                    continue
+
+                desc = desc.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+                desc = desc.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                desc = ' '.join(desc.split())
+                desc = ''.join(ch for ch in desc if ord(ch) >= 32 or ch in '\t')
+                
+                # Get caption ID (use 'id' field or fallback to description)
+                caption_id = item.get('id') or desc
+                
+                captions_with_ids.append({
+                    'id': caption_id,
+                    'description': desc
+                })
+                captions_only.append(desc)
+        
+        if not captions_with_ids:
+            print("No valid captions after cleaning!")
+            return
+        print(f"Captions loaded & cleaned: {len(captions_with_ids)}")
+        
+    except Exception as e:
+        print(f"Captions error: {e}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # 4. Load images
+    # ------------------------------------------------------------------ #
+    if not os.path.exists(jpg_path):
+        print(f"next_jpgcard.json missing: {jpg_path}")
+        return
+
+    try:
+        with open(jpg_path, 'r', encoding='utf-8') as f:
+            images = json.load(f).get("next_jpgcard", [])[:cardamount]
+        if not images:
+            print("No images!")
+            return
+        print(f"Images available: {len(images)}")
+    except Exception as e:
+        print(f"Image error: {e}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # 5. Load schedule
+    # ------------------------------------------------------------------ #
+    if not os.path.exists(sched_path):
+        print(f"schedules.json missing: {sched_path}")
+        return
+
+    try:
+        with open(sched_path, 'r', encoding='utf-8') as f:
+            schedule = json.load(f).get("next_schedule", [])[:cardamount]
+        if not schedule:
+            print("No schedule!")
+            return
+        print(f"Schedule slots: {len(schedule)}")
+    except Exception as e:
+        print(f"Schedule error: {e}")
+        return
+
+    # ------------------------------------------------------------------ #
+    # 6. Handle FIXED captions state - track used captions internally
+    # ------------------------------------------------------------------ #
+    used_captions = []
+    available_captions = captions_with_ids.copy()
+    
+    if captions_state == "fixed":
+        print(f"\n📌 FIXED CAPTIONS MODE ENABLED - Tracking used captions internally")
+        
+        # Load previously used captions from CSV directory (internal tracking)
+        tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
+        
+        if os.path.exists(tracking_file):
+            try:
+                with open(tracking_file, 'r', encoding='utf-8') as f:
+                    used_captions = json.load(f)
+                print(f"📊 Loaded {len(used_captions)} used captions from internal tracking")
+            except Exception as e:
+                print(f"⚠️ Error loading used captions tracking: {e}")
+                used_captions = []
+        else:
+            # Check if there are existing CSVs and extract used captions from them
+            print("📊 No tracking file found. Checking existing CSVs...")
+            existing_captions = []
+            for file in os.listdir(csv_dir):
+                if file.startswith(base_csv_name) and file.endswith('.csv'):
+                    try:
+                        with open(os.path.join(csv_dir, file), 'r', encoding='utf-8') as f:
+                            reader = csv.DictReader(f)
+                            for row in reader:
+                                if 'Text' in row and row['Text'].strip():
+                                    existing_captions.append(row['Text'].strip())
+                    except Exception as e:
+                        print(f"⚠️ Error reading {file}: {e}")
+            
+            if existing_captions:
+                # Match existing captions with our caption IDs
+                for cap in existing_captions:
+                    for caption_item in captions_with_ids:
+                        if caption_item['description'] == cap:
+                            if caption_item['id'] not in used_captions:
+                                used_captions.append(caption_item['id'])
+                                break
+                print(f"📊 Extracted {len(used_captions)} used captions from existing CSVs")
+        
+        # Filter out used captions
+        used_ids = set(used_captions)
+        available_captions = [c for c in captions_with_ids if c['id'] not in used_ids]
+        
+        print(f"📊 Total captions: {len(captions_with_ids)}, Used: {len(used_captions)}, Available: {len(available_captions)}")
+        
+        # Check if we have enough available captions for the required posts
+        if len(available_captions) == 0:
+            print("⚠️ ALL CAPTIONS HAVE BEEN USED!")
+            print("💡 To generate a new CSV, you need to:")
+            print("   1. Delete the tracking file or")
+            print("   2. Switch to 'mixed' mode in config")
+            return
+        
+        # Check if available captions are less than required
+        if len(available_captions) < cardamount:
+            print(f"⚠️ WARNING: Only {len(available_captions)} captions available but {cardamount} posts requested")
+            print(f"📊 Will use all {len(available_captions)} available captions")
+            final_count = min(cardamount, len(available_captions), len(images), len(schedule))
+        else:
+            final_count = min(cardamount, len(images), len(schedule))
+        
+        # If no posts to generate
+        if final_count == 0:
+            print("❌ No posts to generate. Not enough available captions.")
+            return
+        
+        # We'll track which captions we use in this run
+        used_in_this_run = []
+        
+    else:
+        # MIXED mode - original behavior (unlimited reuse)
+        print(f"\n🔄 MIXED CAPTIONS MODE - Unlimited reuse")
+        final_count = min(cardamount, len(images), len(schedule))
+        if final_count == 0:
+            print("Nothing to generate.")
+            return
+
+    print(f"\nBuilding {final_count} JARVEE-READY posts...\n")
+
+    # ------------------------------------------------------------------ #
+    # 7. Build all rows with captions (respecting fixed mode)
+    # ------------------------------------------------------------------ #
+    rows = []
+    random.seed()
+    
+    # For fixed mode, create a copy of available captions to work with
+    if captions_state == "fixed":
+        # Create a list of available captions to use (will be modified as we use them)
+        remaining_captions = available_captions.copy()
+        used_in_this_run = []
+        
+        for i in range(final_count):
+            if not remaining_captions:
+                # No more captions left - break out of loop
+                print(f"⚠️ No more captions available after {i} posts")
+                break
+            
+            # Select a random caption from remaining
+            selected = random.choice(remaining_captions)
+            caption_text = selected['description']
+            caption_id = selected['id']
+            
+            # Remove it from remaining so it won't be reused
+            remaining_captions.remove(selected)
+            used_in_this_run.append(caption_id)
+            
+            img_url = images[i]
+            slot = schedule[i]
+            
+            date_parts = slot['date'].split('/')
+            yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
+            post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
+            
+            rows.append({
+                "Text": caption_text,
+                "Image URL": img_url,
+                "Tags": "",
+                "Posting Time": post_time
+            })
+            
+            # Print progress
+            card = img_url.split('/')[-1].split('?')[0]
+            #print(f"{i+1:3}. {post_time} → {card} | Caption: {caption_text[:50]}...")
+    
+    else:
+        # MIXED mode - random reuse allowed
+        for i in range(final_count):
+            caption = random.choice(captions_only)
+            img_url = images[i]
+            slot = schedule[i]
+            
+            date_parts = slot['date'].split('/')
+            yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
+            post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
+            
+            rows.append({
+                "Text": caption,
+                "Image URL": img_url,
+                "Tags": "",
+                "Posting Time": post_time
+            })
+            
+            card = img_url.split('/')[-1].split('?')[0]
+            #print(f"{i+1:3}. {post_time} → {card}")
+
+    # ------------------------------------------------------------------ #
+    # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES (100 per file)
+    # ------------------------------------------------------------------ #
+    try:
+        # Delete all existing CSVs with the same base name
+        deleted_count = 0
+        for file in os.listdir(csv_dir):
+            if file.startswith(base_csv_name) and file.endswith('.csv'):
+                os.remove(os.path.join(csv_dir, file))
+                deleted_count += 1
+        
+        if deleted_count > 0:
+            print(f"\n✅ Deleted {deleted_count} old CSV(s) from {csv_dir}")
+        else:
+            print(f"\n📁 No old CSVs found in {csv_dir}")
+
+        CHUNK_SIZE = 100
+        total_files = (len(rows) + CHUNK_SIZE - 1) // CHUNK_SIZE  # Ceiling division
+
+        for idx in range(total_files):
+            chunk = rows[idx * CHUNK_SIZE : (idx + 1) * CHUNK_SIZE]
+            
+            # File naming: first file = author_posts.csv, rest = author_posts_a.csv, _b.csv, etc.
+            if idx == 0 and len(rows) <= CHUNK_SIZE:
+                csv_filename = f"{base_csv_name}.csv"
+            else:
+                suffix = '' if idx == 0 else '_' + string.ascii_lowercase[idx - 1]
+                csv_filename = f"{base_csv_name}{suffix}.csv"
+            
+            csv_fullpath = os.path.join(csv_dir, csv_filename)
+
+            with open(csv_fullpath, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["Text", "Image URL", "Tags", "Posting Time"],
+                    quoting=csv.QUOTE_ALL,
+                    lineterminator='\n'
+                )
+                writer.writeheader()
+                writer.writerows(chunk)
+
+            print(f"✅ Saved: {csv_filename} ({len(chunk)} posts)")
+
+        # ------------------------------------------------------------------ #
+        # 9. Update tracking for FIXED mode
+        # ------------------------------------------------------------------ #
+        if captions_state == "fixed" and used_in_this_run:
+            # Combine previously used with newly used
+            all_used = used_captions + used_in_this_run
+            
+            # Save tracking file
+            tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
+            try:
+                with open(tracking_file, 'w', encoding='utf-8') as f:
+                    json.dump(all_used, f, indent=2)
+                print(f"📊 Updated tracking: {len(all_used)} total used captions")
+                print(f"   Newly used in this run: {len(used_in_this_run)}")
+                
+                # Calculate remaining captions
+                all_used_set = set(all_used)
+                remaining = [c for c in captions_with_ids if c['id'] not in all_used_set]
+                print(f"   Remaining available captions: {len(remaining)}")
+                
+                if len(remaining) == 0:
+                    print("⚠️ ALL CAPTIONS HAVE NOW BEEN USED!")
+                    print("💡 Next time, either:")
+                    print("   1. Delete the tracking file to restart")
+                    print("   2. Switch to 'mixed' mode in config")
+                elif len(remaining) < 10:
+                    print(f"⚠️ Only {len(remaining)} captions remaining!")
+                
+            except Exception as e:
+                print(f"⚠️ Error saving tracking file: {e}")
+
+        print("\n" + "═" * 100)
+        print("✅ ALL JARVEE-READY CSVs GENERATED SUCCESSFULLY! (100 posts max per file)")
+        print(f"   → {csv_dir}")
+        print(f"   Total: {len(rows)} posts → split into {total_files} file(s)")
+        print(f"   Mode: {captions_state.upper()}")
+        
+        if captions_state == "fixed":
+            tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
+            if os.path.exists(tracking_file):
+                try:
+                    with open(tracking_file, 'r', encoding='utf-8') as f:
+                        used_data = json.load(f)
+                    print(f"   Used captions tracked: {len(used_data)} captions")
+                except:
+                    pass
+        else:
+            print("   Caption reuse: UNLIMITED (mixed mode)")
+        
+        print("   Old files cleared | Smart quotes fixed | 100% safe")
+        print("═" * 100)
+
+    except Exception as e:
+        print(f"❌ Save failed: {e}") 
 
 def uploadedjpgs():
     """Archive VALID URLs from next_jpgcard.json → uploadedjpgs.json
