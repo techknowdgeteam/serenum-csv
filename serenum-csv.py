@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 
+OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
 
 # Force bypass of SSL verification for ChromeDriverManager
 os.environ['WDM_SSL_VERIFY'] = '0'
@@ -58,10 +59,57 @@ def fetch_jpgsvault_urls():
     """
     Modified function to fetch all_urls data from jpgsvault_table
     Properly handles JSON array format from the database
-    Clears existing data before saving new URLs
+    Adds summary counts of unique folder names and their URL counts
     """
     import json as json_module  # Rename to avoid conflict with your json variable
-    import os
+    from collections import defaultdict
+    
+    # Define OUTPUT_FILE at the beginning
+    
+    # HELPER FUNCTION: Empty the JSON file at the start
+    def empty_json_file():
+        """
+        Empties the JSON output file at the beginning of execution
+        Creates an empty structure or removes the file
+        """
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+            
+            # Write empty JSON structure
+            empty_data = {
+                "source_url": "",
+                "current_url": "",
+                "page_title": "",
+                "fetched_at": "",
+                "total_jpgs": 0,
+                "expected_total": 0,
+                "jpg_urls": [],
+                "folder_summary": {
+                    "total_unique_folders": 0,
+                    "folders": {},
+                    "details": []
+                },
+                "debug": {
+                    "summary_cards": {"Unique URLs Saved": "0"},
+                    "found_via_js": 0,
+                    "source": "jpgsvault_table.all_urls",
+                    "records_processed": 0,
+                    "json_array_size": 0,
+                    "metadata_skipped": 0,
+                    "status": "initializing"
+                }
+            }
+            
+            with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(empty_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"[ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ] ✅ JSON file emptied/initialized: {OUTPUT_FILE}")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ WARNING: Could not empty JSON file: {e}")
+            return False
     
     # Inner function for manual parsing
     def manual_parse_urls(urls_field):
@@ -93,8 +141,34 @@ def fetch_jpgsvault_urls():
         
         return urls_list
     
+    def extract_folder_name(url):
+        """
+        Extract folder name from URL pattern: .../jpgs/{folder_name}/...
+        Returns folder name or 'unknown' if not found
+        """
+        try:
+            # Look for pattern '/jpgs/' followed by folder name
+            jpgs_pattern = r'/jpgs/([^/]+)/'
+            match = re.search(jpgs_pattern, url)
+            if match:
+                return match.group(1)
+            
+            # Alternative pattern without leading slash
+            jpgs_pattern2 = r'jpgs/([^/]+)/'
+            match = re.search(jpgs_pattern2, url)
+            if match:
+                return match.group(1)
+            
+            return 'unknown'
+        except:
+            return 'unknown'
+    
     try:
         print(f"[ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ] Starting fetch from jpgsvault_table...")
+        
+        # FIRST THING: Empty the JSON file
+        print(f"[ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ] Emptying JSON file before fetching...")
+        empty_json_file()
         
         # Query to get all_urls column from jpgsvault_table
         query = "SELECT all_urls FROM jpgsvault_table" 
@@ -102,6 +176,7 @@ def fetch_jpgsvault_urls():
         
         if result.get('status') != 'success':
             print(f"QUERY ERROR: {result.get('message')}")
+            # Even on error, the file is already emptied
             return []
             
         rows = result.get('results', [])
@@ -109,6 +184,7 @@ def fetch_jpgsvault_urls():
         if not rows:
             print("WARNING: Database returned 'success' but the results list is empty.")
             print("Check if the table 'jpgsvault_table' actually has rows in the PHP interface.")
+            # File is already emptied, just return
             return []
         
         print(f"SUCCESS: Fetched {len(rows)} records from 'jpgsvault_table'")
@@ -118,7 +194,11 @@ def fetch_jpgsvault_urls():
         seen_urls = set()
         skipped_count = 0
         metadata_count = 0
+        expected_total = None  # Will be extracted from metadata
         urls_list = []  # Initialize for statistics
+        
+        # Dictionary to store folder name counts
+        folder_counts = defaultdict(int)
         
         for row in rows:
             # Get the all_urls field from each row
@@ -143,16 +223,26 @@ def fetch_jpgsvault_urls():
                     urls_list = manual_parse_urls(urls_field)
                 
                 # Process each URL in the list
-                for url in urls_list:
-                    # Skip metadata entries like "total_urls: 9684"
-                    if isinstance(url, str):
-                        url_lower = url.lower().strip()
-                        if url_lower.startswith('total_urls:') or url_lower.startswith('total_urls='):
-                            print(f"Skipping metadata entry: {url}")
+                for item in urls_list:
+                    # Skip metadata entries like "total_urls: 9684" and extract expected total
+                    if isinstance(item, str):
+                        item_lower = item.lower().strip()
+                        if item_lower.startswith('total_urls:') or item_lower.startswith('total_urls='):
+                            # Extract the expected total from metadata
+                            try:
+                                # Parse "total_urls: 9317" or "total_urls:9317" or "total_urls=9317"
+                                total_match = re.search(r'\d+', item)
+                                if total_match:
+                                    expected_total = int(total_match.group())
+                                    print(f"📊 Found metadata: {item} -> Expected total: {expected_total}")
+                            except Exception as e:
+                                print(f"Could not parse expected total from '{item}': {e}")
+                            
+                            print(f"Skipping metadata entry: {item}")
                             metadata_count += 1
                             continue
                     
-                    url = str(url).strip()
+                    url = str(item).strip()
                     
                     # Skip empty strings
                     if not url:
@@ -183,35 +273,40 @@ def fetch_jpgsvault_urls():
                             # Remove any quotes or brackets from path
                             path_part = re.sub(r'["\'\[\]]', '', path_part)
                             # Construct clean URL
-                            url = f'http://fhdrikxsirudr.fwh.is/{path_part}'
+                            url = f'https://fhdrikxsirudr.fwh.is/{path_part}'
                         else:
                             # If no jpgs found, treat as relative path
                             url = url.replace('\\', '/')
                             url = re.sub(r'/+', '/', url)
                             url = re.sub(r'["\'\[\]]', '', url)
-                            url = f'http://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
+                            url = f'https://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
                     elif url.startswith('/'):
-                        url = f'http://fhdrikxsirudr.fwh.is{url}'
+                        url = f'https://fhdrikxsirudr.fwh.is{url}'
                         url = re.sub(r'/+', '/', url)
                     elif url.startswith('//'):
-                        url = f'http:{url}'
+                        url = f'https:{url}'
                         url = re.sub(r'/+', '/', url)
                     elif not url.startswith('http'):
                         # Assume it's a relative path
                         url = url.replace('\\', '/')
                         url = re.sub(r'/+', '/', url)
                         url = re.sub(r'["\'\[\]]', '', url)
-                        url = f'http://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
+                        url = f'https://fhdrikxsirudr.fwh.is/{url.lstrip("/")}'
                     else:
                         # Already has http, just clean it
                         url = re.sub(r'["\'\[\]]', '', url)
                         url = re.sub(r'/+', '/', url)
+                    
+                    # Extract folder name for summary
+                    folder_name = extract_folder_name(url)
                     
                     # Accept ALL URLs regardless of extension
                     if url and url not in seen_urls:
                         # Accept the URL regardless of extension
                         seen_urls.add(url)
                         all_urls.append(url)
+                        # Increment folder count
+                        folder_counts[folder_name] += 1
                     elif url in seen_urls:
                         skipped_count += 1
                     else:
@@ -219,7 +314,11 @@ def fetch_jpgsvault_urls():
                         print(f"DEBUG: Skipped invalid URL: {original_url} -> {url}")
         
         total = len(all_urls)
-        expected_total = 9684  # From your metadata
+        
+        # If expected_total wasn't found in metadata, use the actual total
+        if expected_total is None:
+            expected_total = total
+            print(f"\n⚠️ No metadata found with expected total, using extracted count: {expected_total}")
         
         print(f"\n📊 STATISTICS:")
         print(f"   - Total items in JSON array: {len(urls_list)}")
@@ -237,53 +336,73 @@ def fetch_jpgsvault_urls():
             for i, item in enumerate(urls_list[:5]):
                 if isinstance(item, str) and not item.startswith('total_urls'):
                     print(f"   {i+1}. {item}")
+        else:
+            print(f"\n✅ PERFECT MATCH: Extracted all {total} URLs as expected!")
+        
+        # Print folder summary
+        print(f"\n📁 FOLDER SUMMARY (Unique names and their URL counts):")
+        print(f"{'='*60}")
+        print(f"{'Folder Name':<30} {'URL Count':<10} {'Percentage':<10}")
+        print(f"{'='*60}")
+        
+        # Sort by count descending
+        sorted_folders = sorted(folder_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        for folder_name, count in sorted_folders:
+            percentage = (count / total * 100) if total > 0 else 0
+            print(f"{folder_name:<30} {count:<10} {percentage:.1f}%")
+        
+        print(f"{'='*60}")
+        print(f"{'TOTAL UNIQUE FOLDERS':<30} {len(folder_counts):<10}")
+        print(f"{'TOTAL URLs':<30} {total:<10}")
+        print(f"{'='*60}")
         
         print(f"\n✅ Final: {total} unique JPG URL(s) extracted from all_urls column")
         
         # Create output in EXACT same format as fetch_urls
         output_data = {
-            "source_url": "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1",
-            "current_url": "http://fhdrikxsirudr.fwh.is/loadimagesurl.php?i=1",
+            "source_url": "https://fhdrikxsirudr.fwh.is/loadimagesurl.php",
+            "current_url": "https://fhdrikxsirudr.fwh.is/loadimagesurl.php",
             "page_title": "JPGs Vault Database Export",
             "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z",
             "total_jpgs": total,
             "expected_total": expected_total,
             "jpg_urls": all_urls,
+            "folder_summary": {
+                "total_unique_folders": len(folder_counts),
+                "folders": dict(sorted_folders),
+                "details": [
+                    {
+                        "folder_name": folder_name,
+                        "url_count": count,
+                        "percentage": round((count / total * 100), 2) if total > 0 else 0
+                    }
+                    for folder_name, count in sorted_folders
+                ]
+            },
             "debug": {
                 "summary_cards": {"Unique URLs Saved": str(total)},
                 "found_via_js": total,
                 "source": "jpgsvault_table.all_urls",
                 "records_processed": len(rows),
                 "json_array_size": len(urls_list),
-                "metadata_skipped": metadata_count
+                "metadata_skipped": metadata_count,
+                "status": "completed_successfully"
             }
         }
         
-        # Save to the same output file as fetch_urls uses
-        OUTPUT_FILE = r"C:\xampp\htdocs\serenum-csv\files\fetchedjpgsurl.json"
-        
-        # --- NEW: Clear existing data before saving ---
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-        
-        # Check if file exists and delete it
-        if os.path.exists(OUTPUT_FILE):
-            try:
-                os.remove(OUTPUT_FILE)
-                print(f"🗑️ Removed existing file: {OUTPUT_FILE}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not delete existing file: {e}")
-        
-        # Save new data
+        # Save to file (overwrites the empty version with actual data)
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
         
-        print(f"\n💾 New data saved to {OUTPUT_FILE}")
+        print(f"\n💾 Data saved to {OUTPUT_FILE}")
         
         if all_urls:
             print(f"\n📋 Sample URLs (first 10):")
             for url in all_urls[:10]:
-                print(f"  {url}")
+                # Also show which folder each sample belongs to
+                folder = extract_folder_name(url)
+                print(f"  [{folder}] {url}")
         
         return all_urls
         
@@ -291,8 +410,39 @@ def fetch_jpgsvault_urls():
         print(f"CRITICAL ERROR in fetch process: {e}")
         import traceback
         traceback.print_exc()
-        return []                                                                              
-
+        
+        # Update the JSON with error status (file was already emptied at start)
+        try:
+            error_data = {
+                "source_url": "",
+                "current_url": "",
+                "page_title": "",
+                "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z",
+                "total_jpgs": 0,
+                "expected_total": 0,
+                "jpg_urls": [],
+                "folder_summary": {
+                    "total_unique_folders": 0,
+                    "folders": {},
+                    "details": []
+                },
+                "debug": {
+                    "summary_cards": {"Unique URLs Saved": "0"},
+                    "found_via_js": 0,
+                    "source": "jpgsvault_table.all_urls",
+                    "records_processed": 0,
+                    "json_array_size": 0,
+                    "metadata_skipped": 0,
+                    "status": f"error: {str(e)}"
+                }
+            }
+            with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+                json.dump(error_data, f, ensure_ascii=False, indent=2)
+        except:
+            pass  # If we can't even write error, just return
+        
+        return []
+   
 def corruptedjpgs():
     """
     Scans ALL .jpg, .jpeg, .png, .gif files in:
@@ -779,11 +929,11 @@ def markjpgs_old():
     # 2. Paths
     # ------------------------------------------------------------------ #
     # Define both HTTP and HTTPS base paths for flexible matching
-    http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}/"
+    http_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
     https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
     
     if processjpgfrom == 'uploadedjpgs':
-        http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
+        http_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
         https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
 
     jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
@@ -888,10 +1038,10 @@ def markjpgs_old():
                     url = u.strip()
                     uploaded_urls.add(url)
                     # Also add the alternative protocol version
-                    if url.startswith('http://'):
+                    if url.startswith('https://'):
                         uploaded_urls.add('https://' + url[7:])
                     elif url.startswith('https://'):
-                        uploaded_urls.add('http://' + url[8:])
+                        uploaded_urls.add('https://' + url[8:])
             
             print(f"Loaded {len(uploaded_urls)} already-uploaded URLs → will skip them")
         except Exception as e:
@@ -911,10 +1061,10 @@ def markjpgs_old():
             for url in existing_next_urls:
                 next_urls_set.add(url)
                 # Also add the alternative protocol version
-                if url.startswith('http://'):
+                if url.startswith('https://'):
                     next_urls_set.add('https://' + url[7:])
                 elif url.startswith('https://'):
-                    next_urls_set.add('http://' + url[8:])
+                    next_urls_set.add('https://' + url[8:])
             
             print(f"Loaded {len(existing_next_urls)} URL(s) from next_jpgcard.json")
         except Exception as e:
@@ -929,8 +1079,8 @@ def markjpgs_old():
     
     for url in unique_image_urls:
         # Check if URL exists in uploaded_urls or next_urls_set
-        url_http = url.replace('https://', 'http://') if url.startswith('https://') else url
-        url_https = url.replace('http://', 'https://') if url.startswith('http://') else url
+        url_http = url.replace('https://', 'https://') if url.startswith('https://') else url
+        url_https = url.replace('https://', 'https://') if url.startswith('https://') else url
         
         # Skip if in either uploaded or next_jpgcard
         if (url not in uploaded_urls and url_http not in uploaded_urls and url_https not in uploaded_urls and
@@ -938,12 +1088,12 @@ def markjpgs_old():
             candidate_urls.append(url)
     
     skipped_uploaded = sum(1 for url in unique_image_urls if url in uploaded_urls or 
-                           (url.replace('https://', 'http://') if url.startswith('https://') else url) in uploaded_urls or
-                           (url.replace('http://', 'https://') if url.startswith('http://') else url) in uploaded_urls)
+                           (url.replace('https://', 'https://') if url.startswith('https://') else url) in uploaded_urls or
+                           (url.replace('https://', 'https://') if url.startswith('https://') else url) in uploaded_urls)
     
     skipped_next = sum(1 for url in unique_image_urls if url in next_urls_set or 
-                      (url.replace('https://', 'http://') if url.startswith('https://') else url) in next_urls_set or
-                      (url.replace('http://', 'https://') if url.startswith('http://') else url) in next_urls_set)
+                      (url.replace('https://', 'https://') if url.startswith('https://') else url) in next_urls_set or
+                      (url.replace('https://', 'https://') if url.startswith('https://') else url) in next_urls_set)
     
     print(f"\nAfter deduplication: {len(candidate_urls)} new URLs left")
     print(f"  - Skipped (uploaded): {skipped_uploaded}")
@@ -1157,11 +1307,11 @@ def markjpgs():
     # 2. Paths
     # ------------------------------------------------------------------ #
     # Define both HTTP and HTTPS base paths for flexible matching
-    http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}/"
+    http_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
     https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}/"
     
     if processjpgfrom == 'uploadedjpgs':
-        http_base = f"http://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
+        http_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
         https_base = f"https://fhdrikxsirudr.fwh.is/jpgs/{author}_uploaded/"
 
     jpgfolders_dir = fr'C:\xampp\htdocs\serenum-csv\files\jpgfolders\{author}'
@@ -1276,10 +1426,10 @@ def markjpgs():
                     uploaded_urls_original.add(url)
                     uploaded_urls_norm.add(url.lower())
                     # Also add the alternative protocol version (normalized)
-                    if url.startswith('http://'):
+                    if url.startswith('https://'):
                         uploaded_urls_norm.add(('https://' + url[7:]).lower())
                     elif url.startswith('https://'):
-                        uploaded_urls_norm.add(('http://' + url[8:]).lower())
+                        uploaded_urls_norm.add(('https://' + url[8:]).lower())
             
             print(f"Loaded {len(uploaded_urls_original)} already-uploaded URLs → will skip them (case-insensitive)")
         except Exception as e:
@@ -1302,10 +1452,10 @@ def markjpgs():
                 next_urls_original.add(url)
                 next_urls_norm.add(url.lower())
                 # Also add the alternative protocol version (normalized)
-                if url.startswith('http://'):
+                if url.startswith('https://'):
                     next_urls_norm.add(('https://' + url[7:]).lower())
                 elif url.startswith('https://'):
-                    next_urls_norm.add(('http://' + url[8:]).lower())
+                    next_urls_norm.add(('https://' + url[8:]).lower())
             
             print(f"Loaded {len(existing_next_urls)} URL(s) from next_jpgcard.json")
         except Exception as e:
@@ -1323,8 +1473,8 @@ def markjpgs():
         url_lower = url.lower()
         
         # Normalize HTTP/HTTPS for comparison
-        url_http_lower = url_lower.replace('https://', 'http://')
-        url_https_lower = url_lower.replace('http://', 'https://')
+        url_http_lower = url_lower.replace('https://', 'https://')
+        url_https_lower = url_lower.replace('https://', 'https://')
         
         # Check against normalized (lowercase) sets
         if (url_lower not in uploaded_urls_norm and 
@@ -1341,8 +1491,8 @@ def markjpgs():
     
     for url in unique_image_urls:
         url_lower = url.lower()
-        url_http_lower = url_lower.replace('https://', 'http://')
-        url_https_lower = url_lower.replace('http://', 'https://')
+        url_http_lower = url_lower.replace('https://', 'https://')
+        url_https_lower = url_lower.replace('https://', 'https://')
         
         if (url_lower in uploaded_urls_norm or 
             url_http_lower in uploaded_urls_norm or 
@@ -2116,199 +2266,6 @@ def check_schedule_time():
     else:
         print(f"Next schedule is valid: {next_schedule_date} {next_schedule_time} is not behind {current_date} {current_time_24hour}")
 
-
-def generate_final_csv_old():
-    """FINAL JARVEE-COMPATIBLE CSV – UNLIMITED POSTS WITH RANDOM CAPTION REUSE + 100 PER FILE SPLIT"""
-    
-    # ------------------------------------------------------------------ #
-    # 1. Load config
-    # ------------------------------------------------------------------ #
-    CONFIG_PATH = r'C:\xampp\htdocs\serenum-csv\pageandgroupauthors.json'
-    
-    try:
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        author = config.get('author', '').strip()
-        group_types = config.get('group_types', '').strip()
-        cardamount = int(config.get('cardamount', 1))
-        type_value = config.get('type', 'fullorders')
-        
-        if not author or not group_types:
-            print("Error: Missing author or group_types")
-            return
-        
-        print(f"Generating JARVEE-READY CSV → {author} ({group_types}) | Up to {cardamount} posts")
-        
-    except Exception as e:
-        print(f"Config error: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 2. Paths
-    # ------------------------------------------------------------------ #
-    captions_path = rf'C:\xampp\htdocs\serenum-csv\files\captions\{author}({group_types}).json'
-    jpg_path = rf'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}\next_jpgcard.json'
-    sched_dir = rf'C:\xampp\htdocs\serenum-csv\files\next jpg\{author}\jsons\{group_types}'
-    sched_path = os.path.join(sched_dir, f"{type_value}schedules.json")
-    
-    csv_dir = rf'C:\xampp\htdocs\serenum-csv\files\csv\{author}\{group_types}'
-    os.makedirs(csv_dir, exist_ok=True)
-
-    base_csv_name = f"{author}_posts"
-    print(f"Saving to → {csv_dir}")
-
-    # ------------------------------------------------------------------ #
-    # 3. Load & clean captions (bulletproof)
-    # ------------------------------------------------------------------ #
-    if not os.path.exists(captions_path):
-        print(f"Captions missing: {captions_path}")
-        return
-
-    try:
-        with open(captions_path, 'r', encoding='utf-8') as f:
-            raw = json.load(f)
-        
-        captions = []
-        for item in raw:
-            if isinstance(item, dict) and 'description' in item:
-                desc = str(item['description']).strip()
-                if not desc:
-                    continue
-
-                desc = desc.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-                desc = desc.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
-                desc = ' '.join(desc.split())
-                desc = ''.join(ch for ch in desc if ord(ch) >= 32 or ch in '\t')
-                
-                captions.append(desc)
-        
-        if not captions:
-            print("No valid captions after cleaning!")
-            return
-        print(f"Captions loaded & cleaned: {len(captions)} → Will be reused randomly")
-    except Exception as e:
-        print(f"Captions error: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 4. Load images
-    # ------------------------------------------------------------------ #
-    if not os.path.exists(jpg_path):
-        print(f"next_jpgcard.json missing: {jpg_path}")
-        return
-
-    try:
-        with open(jpg_path, 'r', encoding='utf-8') as f:
-            images = json.load(f).get("next_jpgcard", [])[:cardamount]
-        if not images:
-            print("No images!")
-            return
-        print(f"Images available: {len(images)}")
-    except Exception as e:
-        print(f"Image error: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 5. Load schedule
-    # ------------------------------------------------------------------ #
-    if not os.path.exists(sched_path):
-        print(f"schedules.json missing: {sched_path}")
-        return
-
-    try:
-        with open(sched_path, 'r', encoding='utf-8') as f:
-            schedule = json.load(f).get("next_schedule", [])[:cardamount]
-        if not schedule:
-            print("No schedule!")
-            return
-        print(f"Schedule slots: {len(schedule)}")
-    except Exception as e:
-        print(f"Schedule error: {e}")
-        return
-
-    # ------------------------------------------------------------------ #
-    # 6. Final count
-    # ------------------------------------------------------------------ #
-    final_count = min(cardamount, len(images), len(schedule))
-    if final_count == 0:
-        print("Nothing to generate.")
-        return
-
-    print(f"\nBuilding {final_count} JARVEE-READY posts with random caption reuse...\n")
-
-    # ------------------------------------------------------------------ #
-    # 7. Build all rows with random captions
-    # ------------------------------------------------------------------ #
-    rows = []
-    random.seed()
-
-    for i in range(final_count):
-        caption = random.choice(captions)
-        img_url = images[i]
-        slot = schedule[i]
-
-        date_parts = slot['date'].split('/')
-        yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
-        post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
-
-        rows.append({
-            "Text": caption,
-            "Image URL": img_url,
-            "Tags": "",
-            "Posting Time": post_time
-        })
-
-        card = img_url.split('/')[-1].split('?')[0]
-        #print(f"{i+1:3}. {post_time} → {card}")
-
-    # ------------------------------------------------------------------ #
-    # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES (100 per file)
-    # ------------------------------------------------------------------ #
-    try:
-        # Delete all existing CSVs with the same base name
-        for file in os.listdir(csv_dir):
-            if file.startswith(base_csv_name) and file.endswith('.csv'):
-                os.remove(os.path.join(csv_dir, file))
-        print(f"\nOld CSVs deleted in {csv_dir}")
-
-        CHUNK_SIZE = 100
-        total_files = (len(rows) + CHUNK_SIZE - 1) // CHUNK_SIZE  # Ceiling division
-
-        for idx in range(total_files):
-            chunk = rows[idx * CHUNK_SIZE : (idx + 1) * CHUNK_SIZE]
-            
-            # File naming: first file = author_posts.csv, rest = author_posts_a.csv, _b.csv, etc.
-            if idx == 0 and len(rows) <= CHUNK_SIZE:
-                csv_filename = f"{base_csv_name}.csv"
-            else:
-                suffix = '' if idx == 0 else '_' + string.ascii_lowercase[idx - 1]
-                csv_filename = f"{base_csv_name}{suffix}.csv"
-            
-            csv_fullpath = os.path.join(csv_dir, csv_filename)
-
-            with open(csv_fullpath, 'w', encoding='utf-8', newline='') as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=["Text", "Image URL", "Tags", "Posting Time"],
-                    quoting=csv.QUOTE_ALL,
-                    lineterminator='\n'
-                )
-                writer.writeheader()
-                writer.writerows(chunk)
-
-            print(f"Saved: {csv_filename} ({len(chunk)} posts)")
-
-        print("\n" + "═" * 100)
-        print("ALL JARVEE-READY CSVs GENERATED SUCCESSFULLY! (100 posts max per file)")
-        print(f"   → {csv_dir}")
-        print(f"   Total: {len(rows)} posts → split into {total_files} file(s)")
-        print("   Old files cleared | Random captions | Smart quotes fixed | 100% safe")
-        print("═" * 100)
-
-    except Exception as e:
-        print(f"Save failed: {e}")
-
 def generate_final_csv():
     """FINAL JARVEE-COMPATIBLE CSV – UNLIMITED POSTS WITH RANDOM CAPTION REUSE + 100 PER FILE SPLIT"""
     
@@ -2353,7 +2310,7 @@ def generate_final_csv():
     print(f"Saving to → {csv_dir}")
 
     # ------------------------------------------------------------------ #
-    # 3. Load & clean captions (bulletproof)
+    # 3. Load & clean captions
     # ------------------------------------------------------------------ #
     if not os.path.exists(captions_path):
         print(f"Captions missing: {captions_path}")
@@ -2363,9 +2320,8 @@ def generate_final_csv():
         with open(captions_path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         
-        # Store captions with their IDs for tracking
-        captions_with_ids = []
-        captions_only = []
+        # Store captions
+        captions_list = []
         
         for item in raw:
             if isinstance(item, dict) and 'description' in item:
@@ -2378,19 +2334,12 @@ def generate_final_csv():
                 desc = ' '.join(desc.split())
                 desc = ''.join(ch for ch in desc if ord(ch) >= 32 or ch in '\t')
                 
-                # Get caption ID (use 'id' field or fallback to description)
-                caption_id = item.get('id') or desc
-                
-                captions_with_ids.append({
-                    'id': caption_id,
-                    'description': desc
-                })
-                captions_only.append(desc)
+                captions_list.append(desc)
         
-        if not captions_with_ids:
+        if not captions_list:
             print("No valid captions after cleaning!")
             return
-        print(f"Captions loaded & cleaned: {len(captions_with_ids)}")
+        print(f"Captions loaded & cleaned: {len(captions_list)}")
         
     except Exception as e:
         print(f"Captions error: {e}")
@@ -2433,79 +2382,33 @@ def generate_final_csv():
         return
 
     # ------------------------------------------------------------------ #
-    # 6. Handle FIXED captions state - track used captions internally
+    # 6. Handle FIXED vs MIXED captions state
     # ------------------------------------------------------------------ #
-    used_captions = []
-    available_captions = captions_with_ids.copy()
-    
     if captions_state == "fixed":
-        print(f"\n📌 FIXED CAPTIONS MODE ENABLED - Tracking used captions internally")
+        print(f"\n📌 FIXED CAPTIONS MODE - Each caption used only once")
         
-        # Load previously used captions from CSV directory (internal tracking)
-        tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
-        
-        if os.path.exists(tracking_file):
-            try:
-                with open(tracking_file, 'r', encoding='utf-8') as f:
-                    used_captions = json.load(f)
-                print(f"📊 Loaded {len(used_captions)} used captions from internal tracking")
-            except Exception as e:
-                print(f"⚠️ Error loading used captions tracking: {e}")
-                used_captions = []
-        else:
-            # Check if there are existing CSVs and extract used captions from them
-            print("📊 No tracking file found. Checking existing CSVs...")
-            existing_captions = []
-            for file in os.listdir(csv_dir):
-                if file.startswith(base_csv_name) and file.endswith('.csv'):
-                    try:
-                        with open(os.path.join(csv_dir, file), 'r', encoding='utf-8') as f:
-                            reader = csv.DictReader(f)
-                            for row in reader:
-                                if 'Text' in row and row['Text'].strip():
-                                    existing_captions.append(row['Text'].strip())
-                    except Exception as e:
-                        print(f"⚠️ Error reading {file}: {e}")
-            
-            if existing_captions:
-                # Match existing captions with our caption IDs
-                for cap in existing_captions:
-                    for caption_item in captions_with_ids:
-                        if caption_item['description'] == cap:
-                            if caption_item['id'] not in used_captions:
-                                used_captions.append(caption_item['id'])
-                                break
-                print(f"📊 Extracted {len(used_captions)} used captions from existing CSVs")
-        
-        # Filter out used captions
-        used_ids = set(used_captions)
-        available_captions = [c for c in captions_with_ids if c['id'] not in used_ids]
-        
-        print(f"📊 Total captions: {len(captions_with_ids)}, Used: {len(used_captions)}, Available: {len(available_captions)}")
-        
-        # Check if we have enough available captions for the required posts
-        if len(available_captions) == 0:
-            print("⚠️ ALL CAPTIONS HAVE BEEN USED!")
-            print("💡 To generate a new CSV, you need to:")
-            print("   1. Delete the tracking file or")
-            print("   2. Switch to 'mixed' mode in config")
+        # Check if we have enough captions for the required posts
+        if len(captions_list) < cardamount:
+            print(f"\n❌ ERROR: Not enough captions available for {cardamount} posts")
+            print(f"   Available: {len(captions_list)}, Required: {cardamount}")
+            print(f"   Shortfall: {cardamount - len(captions_list)} captions")
+            print("\n💡 Solutions:")
+            print("   1. Reduce 'cardamount' in config")
+            print("   2. Add more captions to source file")
+            print("   3. Switch to 'mixed' mode in config")
+            print("\n❌ CSV GENERATION ABORTED")
             return
         
-        # Check if available captions are less than required
-        if len(available_captions) < cardamount:
-            print(f"⚠️ WARNING: Only {len(available_captions)} captions available but {cardamount} posts requested")
-            print(f"📊 Will use all {len(available_captions)} available captions")
-            final_count = min(cardamount, len(available_captions), len(images), len(schedule))
-        else:
-            final_count = min(cardamount, len(images), len(schedule))
+        final_count = min(cardamount, len(images), len(schedule))
         
-        # If no posts to generate
-        if final_count == 0:
-            print("❌ No posts to generate. Not enough available captions.")
+        # Double-check with final_count
+        if len(captions_list) < final_count:
+            print(f"\n❌ ERROR: Not enough captions for {final_count} posts")
+            print(f"   Available: {len(captions_list)}, Required: {final_count}")
+            print("\n❌ CSV GENERATION ABORTED")
             return
         
-        # We'll track which captions we use in this run
-        used_in_this_run = []
+        print(f"✅ {len(captions_list)} captions available for {final_count} posts")
         
     else:
         # MIXED mode - original behavior (unlimited reuse)
@@ -2518,54 +2421,24 @@ def generate_final_csv():
     print(f"\nBuilding {final_count} JARVEE-READY posts...\n")
 
     # ------------------------------------------------------------------ #
-    # 7. Build all rows with captions (respecting fixed mode)
+    # 7. Build all rows with captions
     # ------------------------------------------------------------------ #
     rows = []
     random.seed()
     
-    # For fixed mode, create a copy of available captions to work with
     if captions_state == "fixed":
-        # Create a list of available captions to use (will be modified as we use them)
-        remaining_captions = available_captions.copy()
-        used_in_this_run = []
+        # Fixed mode: use each caption only once
+        available_captions = captions_list.copy()
         
         for i in range(final_count):
-            if not remaining_captions:
-                # No more captions left - break out of loop
-                print(f"⚠️ No more captions available after {i} posts")
-                break
+            if not available_captions:
+                print(f"❌ ERROR: Ran out of captions at post {i+1}")
+                return
             
-            # Select a random caption from remaining
-            selected = random.choice(remaining_captions)
-            caption_text = selected['description']
-            caption_id = selected['id']
+            # Select a random caption and remove it
+            caption = random.choice(available_captions)
+            available_captions.remove(caption)
             
-            # Remove it from remaining so it won't be reused
-            remaining_captions.remove(selected)
-            used_in_this_run.append(caption_id)
-            
-            img_url = images[i]
-            slot = schedule[i]
-            
-            date_parts = slot['date'].split('/')
-            yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
-            post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
-            
-            rows.append({
-                "Text": caption_text,
-                "Image URL": img_url,
-                "Tags": "",
-                "Posting Time": post_time
-            })
-            
-            # Print progress
-            card = img_url.split('/')[-1].split('?')[0]
-            #print(f"{i+1:3}. {post_time} → {card} | Caption: {caption_text[:50]}...")
-    
-    else:
-        # MIXED mode - random reuse allowed
-        for i in range(final_count):
-            caption = random.choice(captions_only)
             img_url = images[i]
             slot = schedule[i]
             
@@ -2579,12 +2452,27 @@ def generate_final_csv():
                 "Tags": "",
                 "Posting Time": post_time
             })
+    
+    else:
+        # MIXED mode: random reuse allowed
+        for i in range(final_count):
+            caption = random.choice(captions_list)
+            img_url = images[i]
+            slot = schedule[i]
             
-            card = img_url.split('/')[-1].split('?')[0]
-            #print(f"{i+1:3}. {post_time} → {card}")
+            date_parts = slot['date'].split('/')
+            yyyy_mm_dd = f"{date_parts[2]}-{date_parts[1].zfill(2)}-{date_parts[0].zfill(2)}"
+            post_time = f"{yyyy_mm_dd} {slot['time_24hour']}"
+            
+            rows.append({
+                "Text": caption,
+                "Image URL": img_url,
+                "Tags": "",
+                "Posting Time": post_time
+            })
 
     # ------------------------------------------------------------------ #
-    # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES (100 per file)
+    # 8. DELETE OLD CSVs + SPLIT & SAVE NEW ONES
     # ------------------------------------------------------------------ #
     try:
         # Delete all existing CSVs with the same base name
@@ -2600,7 +2488,7 @@ def generate_final_csv():
             print(f"\n📁 No old CSVs found in {csv_dir}")
 
         CHUNK_SIZE = 100
-        total_files = (len(rows) + CHUNK_SIZE - 1) // CHUNK_SIZE  # Ceiling division
+        total_files = (len(rows) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
         for idx in range(total_files):
             chunk = rows[idx * CHUNK_SIZE : (idx + 1) * CHUNK_SIZE]
@@ -2626,37 +2514,6 @@ def generate_final_csv():
 
             print(f"✅ Saved: {csv_filename} ({len(chunk)} posts)")
 
-        # ------------------------------------------------------------------ #
-        # 9. Update tracking for FIXED mode
-        # ------------------------------------------------------------------ #
-        if captions_state == "fixed" and used_in_this_run:
-            # Combine previously used with newly used
-            all_used = used_captions + used_in_this_run
-            
-            # Save tracking file
-            tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
-            try:
-                with open(tracking_file, 'w', encoding='utf-8') as f:
-                    json.dump(all_used, f, indent=2)
-                print(f"📊 Updated tracking: {len(all_used)} total used captions")
-                print(f"   Newly used in this run: {len(used_in_this_run)}")
-                
-                # Calculate remaining captions
-                all_used_set = set(all_used)
-                remaining = [c for c in captions_with_ids if c['id'] not in all_used_set]
-                print(f"   Remaining available captions: {len(remaining)}")
-                
-                if len(remaining) == 0:
-                    print("⚠️ ALL CAPTIONS HAVE NOW BEEN USED!")
-                    print("💡 Next time, either:")
-                    print("   1. Delete the tracking file to restart")
-                    print("   2. Switch to 'mixed' mode in config")
-                elif len(remaining) < 10:
-                    print(f"⚠️ Only {len(remaining)} captions remaining!")
-                
-            except Exception as e:
-                print(f"⚠️ Error saving tracking file: {e}")
-
         print("\n" + "═" * 100)
         print("✅ ALL JARVEE-READY CSVs GENERATED SUCCESSFULLY! (100 posts max per file)")
         print(f"   → {csv_dir}")
@@ -2664,14 +2521,7 @@ def generate_final_csv():
         print(f"   Mode: {captions_state.upper()}")
         
         if captions_state == "fixed":
-            tracking_file = os.path.join(csv_dir, f"{author}_used_captions.json")
-            if os.path.exists(tracking_file):
-                try:
-                    with open(tracking_file, 'r', encoding='utf-8') as f:
-                        used_data = json.load(f)
-                    print(f"   Used captions tracked: {len(used_data)} captions")
-                except:
-                    pass
+            print(f"   Captions used: {final_count} (no reuse)")
         else:
             print("   Caption reuse: UNLIMITED (mixed mode)")
         
@@ -2679,7 +2529,7 @@ def generate_final_csv():
         print("═" * 100)
 
     except Exception as e:
-        print(f"❌ Save failed: {e}") 
+        print(f"❌ Save failed: {e}")
 
 def uploadedjpgs():
     """Archive VALID URLs from next_jpgcard.json → uploadedjpgs.json
@@ -2748,7 +2598,7 @@ def uploadedjpgs():
             for item in items:
                 if isinstance(item, str):
                     url = item.strip()
-                    if url.lower().startswith(('http://', 'https://')) and url.lower().endswith(('.jpg', '.jpeg')):
+                    if url.lower().startswith(('https://', 'https://')) and url.lower().endswith(('.jpg', '.jpeg')):
                         next_urls.append(url)
                     else:
                         print(f"Skipped invalid URL: {url}")
@@ -2825,7 +2675,7 @@ def uploadedjpgs():
                 candidates = []
 
             for u in candidates:
-                if isinstance(u, str) and u.strip().lower().startswith(('http://', 'https://')):
+                if isinstance(u, str) and u.strip().lower().startswith(('https://', 'https://')):
                     existing_uploaded.append(u.strip())
                     
         except Exception as e:
